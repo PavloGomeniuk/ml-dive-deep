@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FamilyRoom</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Join screen -->
+<div id="join-screen">
+  <div class="join-card">
+    <div class="logo">🏠</div>
+    <h1>FamilyRoom</h1>
+    <p class="tagline">Your family, private</p>
+
+    <form id="join-form" novalidate>
+      <div class="field">
+        <label for="name-input">Your name</label>
+        <input id="name-input" type="text" autocomplete="name" placeholder="e.g. Mum" maxlength="50">
+        <div id="name-error" class="field-error" role="alert"></div>
+      </div>
+      <div class="field">
+        <label for="code-input">Invite code</label>
+        <input id="code-input" type="text" autocomplete="off" placeholder="Family invite code">
+        <div id="code-error" class="field-error" role="alert"></div>
+      </div>
+      <button type="submit" class="btn-primary" id="join-btn">Join the room</button>
+    </form>
+  </div>
+</div>
+
+<!-- App shell (hidden until joined) -->
+<div id="app" role="application" aria-label="FamilyRoom">
+
+  <div id="conn-banner" aria-live="polite" role="status">Reconnecting…</div>
+
+  <header>
+    <div class="header-logo">🏠 FamilyRoom</div>
+    <div class="presence-list" id="presence-list" aria-label="Online now"></div>
+  </header>
+
+  <main class="main">
+    <!-- Left: video -->
+    <section class="video-section" aria-label="Live room">
+      <div class="video-section-header">Live Room — anyone online can toggle video/audio</div>
+
+      <div id="video-grid" aria-label="Video tiles"></div>
+      <div id="solo-hint" aria-live="polite">
+        No one else is here yet. Share the link to invite family.
+      </div>
+
+      <!-- Desktop self-controls -->
+      <div class="self-controls" aria-label="Your controls">
+        <button class="ctrl-btn" id="btn-mic" aria-pressed="false" title="Toggle microphone">
+          🎤 Mic
+        </button>
+        <button class="ctrl-btn" id="btn-cam" aria-pressed="false" title="Toggle camera">
+          📷 Camera
+        </button>
+        <button class="ctrl-btn" id="btn-screen" aria-pressed="false" title="Share screen">
+          🖥 Share
+        </button>
+      </div>
+    </section>
+
+    <!-- Right: chat -->
+    <aside class="chat-section" aria-label="Family chat">
+      <div class="chat-section-header">Family Chat</div>
+
+      <div id="messages" aria-live="polite" aria-atomic="false" aria-label="Chat messages">
+        <!-- Skeleton shown during initial load -->
+        <div id="chat-loading">
+          <div class="shimmer"></div>
+          <div class="shimmer"></div>
+          <div class="shimmer"></div>
+        </div>
+        <div id="empty-chat" role="status">
+          <div class="empty-icon">🏠</div>
+          <strong>Welcome to FamilyRoom</strong>
+          <p>Say hello! Your messages are saved here.</p>
+        </div>
+      </div>
+      <button id="new-msgs-btn" aria-label="Scroll to new messages">↓ new messages</button>
+
+      <div class="input-bar">
+        <button class="attach-btn" id="attach-btn" title="Attach file or image" aria-label="Attach file">📎</button>
+        <input type="file" id="file-input" accept="image/*,.pdf,.zip,.doc,.docx">
+        <textarea id="msg-input" placeholder="Type a message…" rows="1" aria-label="Message input"></textarea>
+        <button class="send-btn" id="send-btn" title="Send message">Send</button>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Mobile bottom controls -->
+  <div id="mobile-controls" aria-label="Your controls">
+    <button class="ctrl-btn" id="btn-mic-m" aria-pressed="false" title="Toggle microphone">🎤 Mic</button>
+    <button class="ctrl-btn" id="btn-cam-m" aria-pressed="false" title="Toggle camera">📷 Camera</button>
+    <button class="ctrl-btn" id="btn-screen-m" aria-pressed="false" title="Share screen">🖥 Share</button>
+  </div>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

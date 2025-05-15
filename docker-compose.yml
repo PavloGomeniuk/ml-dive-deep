@@ -1,0 +1,13 @@
+services:
+  familyroom:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - familyroom-db:/app/server/data
+      - familyroom-uploads:/app/server/uploads
+    restart: unless-stopped
+
+volumes:
+  familyroom-db:
+  familyroom-uploads:
