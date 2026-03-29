@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecretDrop — Share secrets safely</title>
+  <script src="/static/alpine.js" defer></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 2rem; width: 100%; max-width: 560px; box-shadow: 0 4px 32px rgba(0,0,0,.4); }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.25rem; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-bottom: 1.5rem; }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .tab { padding: 0.4rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; border: 1px solid #334155; background: transparent; color: #94a3b8; transition: all .15s; }
+    .tab.active { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+    textarea { width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; padding: 0.75rem; font-family: monospace; font-size: 0.875rem; resize: vertical; min-height: 140px; outline: none; }
+    textarea:focus { border-color: #3b82f6; }
+    .file-drop { width: 100%; background: #0f172a; border: 2px dashed #334155; border-radius: 8px; padding: 2rem; text-align: center; color: #64748b; cursor: pointer; transition: border-color .15s; }
+    .file-drop:hover, .file-drop.over { border-color: #3b82f6; color: #94a3b8; }
+    .file-name { color: #3b82f6; font-size: 0.875rem; margin-top: 0.5rem; }
+    .row { display: flex; gap: 1rem; margin-top: 1rem; }
+    .field { flex: 1; }
+    label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: .05em; }
+    select { width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.875rem; outline: none; }
+    select:focus { border-color: #3b82f6; }
+    input[type=number] { width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; padding: 0.6rem 0.75rem; font-size: 0.875rem; outline: none; }
+    input[type=number]:focus { border-color: #3b82f6; }
+    .btn { width: 100%; padding: 0.75rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 1.25rem; transition: background .15s; }
+    .btn:hover { background: #2563eb; }
+    .btn:disabled { background: #334155; cursor: not-allowed; }
+    .error { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.875rem; margin-top: 1rem; }
+    .result { background: #052e16; border: 1px solid #166534; border-radius: 8px; padding: 1.25rem; margin-top: 1rem; }
+    .result-label { font-size: 0.75rem; color: #86efac; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 0.5rem; }
+    .link-box { display: flex; gap: 0.5rem; align-items: center; }
+    .link-text { background: #0f172a; border: 1px solid #166534; border-radius: 6px; padding: 0.5rem 0.75rem; font-family: monospace; font-size: 0.8rem; color: #86efac; flex: 1; word-break: break-all; }
+    .copy-btn { background: #166534; color: #86efac; border: none; border-radius: 6px; padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.8rem; white-space: nowrap; }
+    .copy-btn:hover { background: #15803d; }
+    .meta { font-size: 0.75rem; color: #6b7280; margin-top: 0.75rem; }
+    .countdown { font-size: 0.875rem; color: #fbbf24; margin-top: 0.5rem; }
+    .token-box { margin-top: 0.75rem; }
+    .token-val { font-family: monospace; font-size: 0.75rem; color: #94a3b8; word-break: break-all; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.4rem 0.6rem; }
+  </style>
+</head>
+<body>
+  <div class="card" x-data="secretForm()" x-init="startCountdown()">
+    <h1>SecretDrop</h1>
+    <p class="subtitle">Share secrets once. They disappear after viewing.</p>
+
+    <template x-if="!result">
+      <div>
+        <div class="tabs">
+          <button class="tab" :class="{ active: mode === 'text' }" @click="mode = 'text'; fileData = null; fileName = ''">Paste text</button>
+          <button class="tab" :class="{ active: mode === 'file' }" @click="mode = 'file'">Upload file</button>
+        </div>
+
+        <template x-if="mode === 'text'">
+          <textarea x-model="payload" placeholder="Paste your secret here..."></textarea>
+        </template>
+
+        <template x-if="mode === 'file'">
+          <div>
+            <div class="file-drop"
+                 :class="{ over: dragOver }"
+                 @dragover.prevent="dragOver = true"
+                 @dragleave="dragOver = false"
+                 @drop.prevent="handleDrop($event)"
+                 @click="$refs.fileInput.click()">
+              <div>Drop a file here or click to browse</div>
+              <div x-show="fileName" class="file-name" x-text="fileName"></div>
+            </div>
+            <input type="file" x-ref="fileInput" style="display:none" @change="handleFileSelect($event)">
+          </div>
+        </template>
+
+        <div class="row">
+          <div class="field">
+            <label>Expires in</label>
+            <select x-model="expiresIn">
+              <option value="1h">1 hour</option>
+              <option value="24h" selected>24 hours</option>
+              <option value="7d">7 days</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Max views</label>
+            <select x-model="maxViews">
+              <option value="1" selected>1 (self-destruct)</option>
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="unlimited">Unlimited</option>
+            </select>
+          </div>
+        </div>
+
+        <div x-show="errorMsg" class="error" x-text="errorMsg"></div>
+
+        <button class="btn" @click="submit()" :disabled="loading">
+          <span x-show="!loading">Generate secret link</span>
+          <span x-show="loading">Generating...</span>
+        </button>
+      </div>
+    </template>
+
+    <template x-if="result">
+      <div class="result">
+        <div class="result-label">Your secret link</div>
+        <div class="link-box">
+          <div class="link-text" x-text="result.link"></div>
+          <button class="copy-btn" @click="copyLink()" x-text="copied ? 'Copied!' : 'Copy'"></button>
+        </div>
+        <div class="meta">
+          Expires: <span x-text="result.expires_at"></span>
+          &nbsp;&middot;&nbsp;
+          Max views: <span x-text="maxViews"></span>
+        </div>
+        <div class="countdown" x-show="countdown > 0">
+          Link expires in <span x-text="formatCountdown(countdown)"></span>
+        </div>
+        <div class="token-box">
+          <div class="result-label" style="margin-top:.75rem">Creator token (save to revoke)</div>
+          <div class="token-val" x-text="result.creator_token"></div>
+        </div>
+        <button class="btn" style="background:#334155;margin-top:1rem" @click="reset()">Create another</button>
+      </div>
+    </template>
+  </div>
+
+  <script>
+    function secretForm() {
+      return {
+        mode: 'text',
+        payload: '',
+        fileData: null,
+        fileName: '',
+        dragOver: false,
+        expiresIn: '24h',
+        maxViews: '1',
+        loading: false,
+        errorMsg: '',
+        result: null,
+        copied: false,
+        countdown: 0,
+        _timer: null,
+
+        startCountdown() {},
+
+        async submit() {
+          this.errorMsg = '';
+          const text = this.mode === 'text' ? this.payload : this.fileData;
+          if (!text || !text.trim()) {
+            this.errorMsg = 'Please enter a secret or upload a file.';
+            return;
+          }
+          this.loading = true;
+          try {
+            const fd = new FormData();
+            fd.append('payload', text);
+            fd.append('expires_in', this.expiresIn);
+            fd.append('max_views', this.maxViews);
+
+            const res = await fetch('/secrets', { method: 'POST', body: fd });
+            if (res.status === 413) {
+              this.errorMsg = `File too large. Maximum size is {{ max_size_kb }}KB.`;
+            } else if (res.status === 400) {
+              this.errorMsg = 'File contains non-text content. Base64-encode it before sharing.';
+            } else if (res.status === 429) {
+              this.errorMsg = 'Too many requests. Please wait a moment and try again.';
+            } else if (!res.ok) {
+              this.errorMsg = 'Something went wrong. Please try again.';
+            } else {
+              this.result = await res.json();
+              this._startExpiryCountdown();
+            }
+          } catch(e) {
+            this.errorMsg = 'Something went wrong. Please try again.';
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        _startExpiryCountdown() {
+          const expiresAt = new Date(this.result.expires_at);
+          const tick = () => {
+            const secs = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+            this.countdown = secs;
+            if (secs > 0) this._timer = setTimeout(tick, 1000);
+          };
+          tick();
+        },
+
+        formatCountdown(secs) {
+          const h = Math.floor(secs / 3600);
+          const m = Math.floor((secs % 3600) / 60);
+          const s = secs % 60;
+          if (h > 0) return `${h}h ${m}m`;
+          if (m > 0) return `${m}m ${s}s`;
+          return `${s}s`;
+        },
+
+        async copyLink() {
+          await navigator.clipboard.writeText(this.result.link);
+          this.copied = true;
+          setTimeout(() => this.copied = false, 2000);
+        },
+
+        reset() {
+          if (this._timer) clearTimeout(this._timer);
+          this.result = null;
+          this.payload = '';
+          this.fileData = null;
+          this.fileName = '';
+          this.errorMsg = '';
+          this.copied = false;
+          this.countdown = 0;
+        },
+
+        handleDrop(e) {
+          this.dragOver = false;
+          const file = e.dataTransfer.files[0];
+          if (file) this._readFile(file);
+        },
+
+        handleFileSelect(e) {
+          const file = e.target.files[0];
+          if (file) this._readFile(file);
+        },
+
+        _readFile(file) {
+          this.fileName = file.name;
+          const reader = new FileReader();
+          reader.onload = (e) => { this.fileData = e.target.result; };
+          reader.readAsText(file);
+        },
+      };
+    }
+  </script>
+</body>
+</html>

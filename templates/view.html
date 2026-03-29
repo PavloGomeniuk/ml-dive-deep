@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecretDrop — View secret</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 2rem; width: 100%; max-width: 560px; box-shadow: 0 4px 32px rgba(0,0,0,.4); }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.25rem; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-bottom: 1.5rem; }
+    .warning { background: #451a03; border: 1px solid #92400e; color: #fcd34d; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.875rem; margin-bottom: 1rem; }
+    .secret-box { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.875rem; white-space: pre-wrap; word-break: break-all; color: #e2e8f0; min-height: 80px; }
+    .actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+    .btn { flex: 1; padding: 0.65rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background .15s; }
+    .btn:hover { background: #2563eb; }
+    .btn-secondary { background: #334155; }
+    .btn-secondary:hover { background: #475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>SecretDrop</h1>
+    <p class="subtitle">You received a one-time secret.</p>
+    <div class="warning">This secret has been revealed. It may no longer be accessible after you close this page.</div>
+    <div class="secret-box" id="secret-content">{{ payload }}</div>
+    <div class="actions">
+      <button class="btn" onclick="copySecret()">Copy to clipboard</button>
+      <a href="/" class="btn btn-secondary" style="text-align:center;text-decoration:none">Share a secret</a>
+    </div>
+  </div>
+  <script>
+    function copySecret() {
+      const text = document.getElementById('secret-content').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy to clipboard', 2000);
+      });
+    }
+  </script>
+</body>
+</html>

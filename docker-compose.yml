@@ -1,0 +1,20 @@
+services:
+  secretdrop:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL:-}
+      - MAX_SECRET_SIZE_KB=${MAX_SECRET_SIZE_KB:-1024}
+      - RATE_LIMIT_PER_IP=${RATE_LIMIT_PER_IP:-10}
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - DB_PATH=/app/data/secrets.db
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
