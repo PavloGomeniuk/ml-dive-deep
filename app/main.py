@@ -14,6 +14,7 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from cryptography.exceptions import InvalidTag
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -90,11 +91,42 @@ def get_aes_key() -> bytes:
     return derive_key(SECRET_KEY)
 
 
-# ---------- Global exception handler ----------
+# ---------- Exception handlers ----------
+
+_ERROR_MESSAGES = {
+    410: ("Secret Gone", "This secret has expired or has already been viewed."),
+    429: ("Too Many Requests", "Too many requests. Please wait a moment and try again."),
+    403: ("Forbidden", "Invalid creator token."),
+    413: ("Payload Too Large", f"File too large. Maximum size is {MAX_SECRET_SIZE_KB}KB."),
+    400: ("Bad Request", "File contains non-text content. Base64-encode it before sharing."),
+}
+
+
+def _wants_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if _wants_html(request):
+        title, message = _ERROR_MESSAGES.get(exc.status_code, ("Error", "Something went wrong."))
+        return templates.TemplateResponse(
+            "error.html",
+            {"request": request, "title": title, "message": message},
+            status_code=exc.status_code,
+        )
+    return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f'"event": "unhandled_exception", "error": "{type(exc).__name__}"')
+    if _wants_html(request):
+        return templates.TemplateResponse(
+            "error.html",
+            {"request": request, "title": "Error", "message": "Something went wrong. Please try again."},
+            status_code=500,
+        )
     return JSONResponse(status_code=500, content={"error": "internal_error"})
 
 

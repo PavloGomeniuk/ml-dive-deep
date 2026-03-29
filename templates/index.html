@@ -228,6 +228,7 @@
 
         _readFile(file) {
           this.fileName = file.name;
+          this.errorMsg = '';
           const reader = new FileReader();
           reader.onload = (e) => { this.fileData = e.target.result; };
           reader.readAsText(file);
