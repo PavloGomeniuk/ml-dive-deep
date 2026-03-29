@@ -115,7 +115,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             {"request": request, "title": title, "message": message},
             status_code=exc.status_code,
         )
-    return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(Exception)
