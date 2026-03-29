@@ -13,7 +13,6 @@ COPY templates/ ./templates/
 
 # Data directory for SQLite
 RUN mkdir -p /app/data
-
 # Non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser

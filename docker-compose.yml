@@ -9,7 +9,7 @@ services:
       - MAX_SECRET_SIZE_KB=${MAX_SECRET_SIZE_KB:-1024}
       - RATE_LIMIT_PER_IP=${RATE_LIMIT_PER_IP:-10}
       - BASE_URL=${BASE_URL:-http://localhost:8000}
-      - DB_PATH=/app/data/secrets.db
+      - DB_PATH=/app/data/secrets.sqlite
     volumes:
       - ./data:/app/data
     healthcheck:
