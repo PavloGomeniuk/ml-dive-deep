@@ -1,0 +1,67 @@
+/* ── Star Wars theme ─────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&display=swap');
+
+:root {
+  --bg:          #000000;
+  --text:        #ffe81f;
+  --accent:      #ffffff;
+  --font:        'Oswald', 'Arial Black', Impact, sans-serif;
+  --card-bg:     rgba(255, 232, 31, 0.04);
+  --card-hover:  rgba(255, 232, 31, 0.08);
+  --card-border: rgba(255, 232, 31, 0.2);
+}
+
+body.light-mode {
+  --bg:          #1a1a2e;
+  --text:        #ffe81f;
+  --card-bg:     rgba(255, 232, 31, 0.06);
+  --card-hover:  rgba(255, 232, 31, 0.12);
+  --card-border: rgba(255, 232, 31, 0.25);
+}
+
+body.theme-starwars #crawl-screen {
+  background: #000;
+}
+
+/* Star field */
+body.theme-starwars #crawl-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 30% 60%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 50% 10%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 90% 40%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 20% 90%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 80% 15%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 45% 50%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 15% 45%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 65% 30%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 75%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 65%, rgba(255,255,255,0.7) 0%, transparent 100%);
+  z-index: 0;
+  pointer-events: none;
+}
+
+body.theme-starwars #crawl-text .crawl-logo {
+  color: #ffe81f;
+  text-shadow: 0 0 30px rgba(255,232,31,0.6);
+  letter-spacing: 0.3em;
+}
+
+body.theme-starwars #crawl-text .crawl-item {
+  color: #ffe81f;
+  font-weight: 700;
+}
+
+body.theme-starwars .section-title {
+  color: #ffe81f;
+  letter-spacing: 0.2em;
+}
+
+body.theme-starwars #site-title {
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}

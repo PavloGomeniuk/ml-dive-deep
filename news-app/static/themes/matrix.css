@@ -1,0 +1,45 @@
+/* ── Matrix theme ────────────────────────────────────────────────── */
+:root {
+  --bg:          #000000;
+  --text:        #00ff41;
+  --accent:      #00cc33;
+  --font:        'Courier New', Courier, monospace;
+  --card-bg:     rgba(0, 30, 0, 0.8);
+  --card-hover:  rgba(0, 50, 0, 0.9);
+  --card-border: rgba(0, 255, 65, 0.3);
+}
+
+body.light-mode {
+  --bg:          #f0fff0;
+  --text:        #004d00;
+  --card-bg:     rgba(0, 200, 50, 0.08);
+  --card-hover:  rgba(0, 200, 50, 0.15);
+  --card-border: rgba(0, 150, 30, 0.4);
+}
+
+/* Scanline effect on crawl screen */
+body.theme-matrix #crawl-screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.15) 2px,
+    rgba(0, 0, 0, 0.15) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+body.theme-matrix #crawl-text .crawl-logo {
+  text-shadow: 0 0 20px #00ff41, 0 0 40px #00cc33;
+}
+
+body.theme-matrix .theme-btn:hover { border-color: #00ff41; color: #00ff41; }
+body.theme-matrix #news-header { border-bottom-color: rgba(0, 255, 65, 0.2); }
+body.theme-matrix .section-title { color: #00ff41; }
+body.theme-matrix a:hover { color: #00cc33; text-shadow: 0 0 8px #00ff41; }
+body.theme-matrix #toggle-btn { color: #00ff41; border-color: rgba(0,255,65,0.3); }
+body.theme-matrix #back-btn { color: #00ff41; border-color: rgba(0,255,65,0.3); }

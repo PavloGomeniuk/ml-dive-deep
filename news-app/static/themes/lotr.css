@@ -1,0 +1,83 @@
+/* ── Lord of the Rings theme ─────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap');
+
+:root {
+  --bg:          #f4e9c9;
+  --text:        #3d2b1f;
+  --accent:      #8b4513;
+  --font:        'IM Fell English', 'Palatino Linotype', Palatino, Georgia, serif;
+  --card-bg:     rgba(139, 69, 19, 0.06);
+  --card-hover:  rgba(139, 69, 19, 0.12);
+  --card-border: rgba(139, 69, 19, 0.25);
+}
+
+body.light-mode {
+  --bg:          #ede0c4;
+  --card-bg:     rgba(139, 69, 19, 0.08);
+}
+
+/* Parchment texture via gradient overlay */
+body.theme-lotr {
+  background-image:
+    linear-gradient(
+      135deg,
+      rgba(139, 69, 19, 0.03) 0%,
+      transparent 50%,
+      rgba(139, 69, 19, 0.03) 100%
+    );
+}
+
+body.theme-lotr #crawl-screen {
+  background: #2a1a0a;
+}
+
+/* Aged paper look on crawl */
+body.theme-lotr #crawl-text {
+  color: #c8a96e;
+  font-style: italic;
+}
+
+body.theme-lotr #crawl-text .crawl-logo {
+  font-style: normal;
+  color: #e8c882;
+  text-shadow: 0 0 20px rgba(200, 169, 110, 0.5);
+  letter-spacing: 0.1em;
+}
+
+body.theme-lotr #crawl-text .crawl-item {
+  font-style: italic;
+  color: #c8a96e;
+}
+
+body.theme-lotr .section-title {
+  color: var(--accent);
+  font-style: italic;
+  font-size: 1.1rem;
+}
+
+body.theme-lotr #news-header {
+  border-bottom: 1px solid rgba(139, 69, 19, 0.3);
+  background: #f4e9c9;
+}
+
+body.theme-lotr #news-header button {
+  color: #3d2b1f;
+  border-color: rgba(139, 69, 19, 0.4);
+}
+
+body.theme-lotr .news-card {
+  border-radius: 2px;
+}
+
+body.theme-lotr .news-card-title {
+  font-size: 1rem;
+}
+
+body.theme-lotr #news-footer {
+  color: #8b4513;
+  border-top-color: rgba(139, 69, 19, 0.2);
+}
+
+/* Sepia-toned links */
+body.theme-lotr a { color: #8b4513; }
+body.theme-lotr a:hover { color: #5c2d0a; }

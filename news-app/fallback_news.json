@@ -1,0 +1,77 @@
+{
+  "fetched_at": "2026-01-01T00:00:00Z",
+  "world_news": [
+    {
+      "title": "World Leaders Gather for Emergency Climate Summit in Geneva",
+      "summary": "Heads of state from over 60 nations convened to address rising sea levels and extreme weather events that have displaced millions across Southeast Asia.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Historic Peace Agreement Signed Between Rival Nations After Decade of Conflict",
+      "summary": "Diplomats hailed a landmark ceasefire as the most significant diplomatic breakthrough in a generation, paving the way for reconstruction and refugee returns.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Global Food Crisis Deepens as Harvest Failures Hit Three Continents",
+      "summary": "The UN World Food Programme warned that over 300 million people face acute food insecurity following simultaneous crop failures in Africa, South Asia, and Central America.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Space Agency Confirms Discovery of Water on Mars Raises New Questions",
+      "summary": "Satellite data analysis revealed subsurface liquid water deposits far larger than previously estimated, reigniting debate over the possibility of microbial life.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Major Earthquake Strikes Coastal Region, Tsunami Warning Issued",
+      "summary": "A 7.8-magnitude earthquake struck early this morning triggering evacuation orders across low-lying coastal communities. Emergency teams are en route.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    }
+  ],
+  "web_security": [
+    {
+      "title": "Critical Zero-Day Vulnerability Discovered in Widely Used Open-Source Library",
+      "summary": "Security researchers have disclosed an unauthenticated remote code execution flaw affecting millions of servers worldwide. A patch is available and immediate updates are urged.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Ransomware Gang Demands $50M After Crippling Hospital Network Across Three Countries",
+      "summary": "A sophisticated ransomware attack encrypted patient records across 47 hospitals, forcing staff to revert to paper-based systems. Law enforcement agencies are investigating.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Nation-State Hackers Breach Government Contractor, Steal Classified Defense Plans",
+      "summary": "Investigators traced the intrusion to a spear-phishing campaign that compromised credentials of a senior engineer. The breach went undetected for nine months.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "New Malware Campaign Targets Banking Apps on Android Devices Globally",
+      "summary": "The malware, distributed via seemingly legitimate apps, harvests credentials and intercepts two-factor authentication codes before forwarding them to command-and-control servers.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    },
+    {
+      "title": "Supply Chain Attack Compromises Popular Developer Tool Used by Fortune 500 Companies",
+      "summary": "Attackers inserted malicious code into a build pipeline update that was automatically distributed to thousands of organisations before the compromise was detected.",
+      "link": "#",
+      "published": "2026-01-01",
+      "source": "Fallback"
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinematic News</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link id="theme-css" rel="stylesheet" href="">
+</head>
+<body>
+
+  <!-- ── SCREEN 1: Theme Picker ───────────────────────────────────── -->
+  <div id="theme-picker">
+    <div class="picker-inner">
+      <p class="picker-tagline">Choose your reality</p>
+      <h1 class="picker-title">CINEMATIC NEWS</h1>
+      <p class="picker-subtitle">Today's headlines. Three universes.</p>
+      <div class="theme-buttons">
+        <button class="theme-btn" data-theme="matrix">
+          <span class="btn-icon">⬛</span>
+          <span class="btn-label">Enter the Matrix</span>
+          <span class="btn-sub">Green on black. Digital rain.</span>
+        </button>
+        <button class="theme-btn" data-theme="starwars">
+          <span class="btn-icon">★</span>
+          <span class="btn-label">Enter the Galaxy</span>
+          <span class="btn-sub">A long time ago, in a feed far away...</span>
+        </button>
+        <button class="theme-btn" data-theme="lotr">
+          <span class="btn-icon">💍</span>
+          <span class="btn-label">Enter Middle-earth</span>
+          <span class="btn-sub">Parchment. Lore. The eye of Sauron watches.</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SCREEN 2: Opening Crawl ─────────────────────────────────── -->
+  <div id="crawl-screen" class="hidden">
+    <canvas id="matrix-rain"></canvas>
+    <div id="crawl-wrapper">
+      <div id="crawl-container">
+        <div id="crawl-text"></div>
+      </div>
+    </div>
+    <div id="skip-hint">Press any key or click to skip</div>
+  </div>
+
+  <!-- ── SCREEN 3: News UI ───────────────────────────────────────── -->
+  <div id="news-screen" class="hidden">
+    <header id="news-header">
+      <div class="header-left">
+        <button id="back-btn" title="Change theme">&#8592; Change theme</button>
+      </div>
+      <h1 id="site-title">Cinematic News</h1>
+      <div class="header-right">
+        <button id="toggle-btn" title="Toggle light/dark mode">&#9788; Light</button>
+      </div>
+    </header>
+
+    <main id="news-main">
+      <section class="news-section" id="world-section">
+        <h2 class="section-title">World News</h2>
+        <div id="world-grid" class="news-grid"></div>
+      </section>
+
+      <section class="news-section" id="security-section">
+        <h2 class="section-title">Web Security</h2>
+        <div id="security-grid" class="news-grid"></div>
+      </section>
+    </main>
+
+    <footer id="news-footer">
+      <span id="fetched-at"></span>
+      <span id="audio-attribution"></span>
+    </footer>
+  </div>
+
+  <audio id="theme-audio"></audio>
+
+  <script src="/static/js/rain.js"></script>
+  <script src="/static/js/crawl.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
