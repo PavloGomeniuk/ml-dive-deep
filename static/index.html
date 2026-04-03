@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medieval WASM RPG</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #050508;
+      color: #c8b89a;
+      font-family: 'Courier New', monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      color: #d4af37;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 0.75rem;
+      color: #5a3a15;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+    }
+
+    #canvas-wrap {
+      position: relative;
+      border: 2px solid #5a3a15;
+      box-shadow: 0 0 30px rgba(90,58,21,0.4), 0 0 60px rgba(0,0,0,0.8);
+    }
+
+    #canvas {
+      display: block;
+      cursor: crosshair;
+      background: #0d0d1a;
+    }
+
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.85);
+      color: #8888aa;
+      font-size: 0.85rem;
+      letter-spacing: 0.1em;
+    }
+
+    #error {
+      display: none;
+      position: absolute;
+      inset: 0;
+      padding: 2em;
+      background: rgba(0,0,0,0.9);
+      color: #cc4444;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
+    .controls {
+      margin-top: 10px;
+      font-size: 0.7rem;
+      color: #3a3a5a;
+      letter-spacing: 0.06em;
+    }
+  </style>
+</head>
+<body>
+  <h1>Medieval WASM RPG</h1>
+  <p class="subtitle">built with Rust + WebAssembly &middot; zero npm</p>
+
+  <div id="canvas-wrap">
+    <canvas id="canvas" width="800" height="500"></canvas>
+    <div id="loading">Loading WASM...</div>
+    <div id="error"></div>
+  </div>
+
+  <p class="controls">Left-click to move &nbsp;|&nbsp; Click near enemy to attack</p>
+
+  <script type="module" src="game.js"></script>
+</body>
+</html>
