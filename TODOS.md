@@ -20,6 +20,15 @@ Rust's own `opt-level="z"`. Combined with current release profile, could reach <
 **Not npm.** System package only.
 **Depends on:** Game at stable size (Day 3 or post-hackathon).
 
+### switch_room bounds check in dungeon.rs
+**What:** Add a bounds check to `DungeonMap::switch_room(idx)` so it saturates
+(clamps to valid room index) rather than panicking on out-of-bounds input.
+**Why:** WASM panics are silent — the game freezes with no visible error to the
+user. A saturating clamp catches logic bugs in room transition code gracefully.
+**How:** `let idx = idx.min(self.rooms.len().saturating_sub(1));` at top of
+`switch_room`. Add a `#[test]` for `switch_room(usize::MAX)` → no panic.
+**Depends on:** `switch_room` implemented (game-v2 feature set).
+
 ### Demon Eye enemy (Type B)
 **What:** Ranged enemy. 15 HP, aggro radius 300px, ranged projectile attack, cooldown 2s,
 damage 6-10, move speed 40px/s. Color #aa2222 (blood red).
