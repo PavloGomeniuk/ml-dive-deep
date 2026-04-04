@@ -61,7 +61,7 @@ impl DungeonMap {
         let room0_enemies = vec![
             Enemy::new(200.0, 150.0),
             Enemy::new(600.0, 150.0),
-            Enemy::new(400.0, 300.0),
+            Enemy::new(600.0, 290.0),
         ];
         let room1_enemies = vec![
             Enemy::new(250.0, 120.0),
