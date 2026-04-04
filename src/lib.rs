@@ -1,12 +1,15 @@
 use wasm_bindgen::prelude::*;
 
+mod character_select;
 mod combat;
 mod dungeon;
 mod entities;
 mod game;
+mod items;
 mod overlay;
 mod particles;
 mod renderer;
+mod title;
 
 use game::GameState;
 
@@ -32,6 +35,10 @@ impl Game {
         self.state.on_click(x, y);
     }
 
+    pub fn on_key(&mut self, key: &str) {
+        self.state.on_key(key);
+    }
+
     pub fn get_frame_ms(&self) -> f32 {
         self.state.last_frame_ms
     }
@@ -41,6 +48,6 @@ impl Game {
     }
 
     pub fn get_wasm_memory_kb(&self) -> u32 {
-        overlay::get_memory_kb()
+        crate::overlay::get_memory_kb()
     }
 }

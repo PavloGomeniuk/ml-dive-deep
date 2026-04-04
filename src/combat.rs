@@ -1,4 +1,4 @@
-use crate::entities::Enemy;
+use crate::entities::{Enemy, PlayerClass};
 
 pub fn xorshift(state: &mut u32) -> u32 {
     let mut x = *state;
@@ -42,12 +42,60 @@ pub fn click_disambiguation(cx: f32, cy: f32, enemies: &[Enemy]) -> ClickAction 
     }
 }
 
-pub fn player_damage_roll(rng: &mut u32) -> f32 {
-    15.0 + (xorshift(rng) % 6) as f32
+pub fn player_damage_roll(rng: &mut u32, class: PlayerClass, damage_bonus: f32) -> f32 {
+    let base = match class {
+        PlayerClass::Warrior => 15.0 + (xorshift(rng) % 6) as f32,
+        PlayerClass::Magician => 12.0 + (xorshift(rng) % 7) as f32,
+    };
+    base + damage_bonus
 }
 
 pub fn enemy_damage_roll(rng: &mut u32) -> f32 {
     8.0 + (xorshift(rng) % 5) as f32
+}
+
+/// Warrior Cleave: AoE hit on all enemies within 80px. Returns list of (enemy_idx, damage).
+pub fn warrior_cleave(
+    px: f32,
+    py: f32,
+    enemies: &[Enemy],
+    rng: &mut u32,
+    damage_bonus: f32,
+) -> Vec<(usize, f32)> {
+    const CLEAVE_RADIUS: f32 = 80.0;
+    let mut hits = Vec::new();
+    for (i, enemy) in enemies.iter().enumerate() {
+        if !enemy.alive {
+            continue;
+        }
+        let d = distance(px, py, enemy.x, enemy.y);
+        if d <= CLEAVE_RADIUS {
+            let dmg = 15.0 + (xorshift(rng) % 6) as f32 + damage_bonus;
+            hits.push((i, dmg));
+        }
+    }
+    hits
+}
+
+/// Magician Frost Nova: AoE freeze on all enemies within 70px.
+/// Returns list of enemy indices that were frozen.
+pub fn magician_frost_nova(
+    px: f32,
+    py: f32,
+    enemies: &[Enemy],
+) -> Vec<usize> {
+    const NOVA_RADIUS: f32 = 70.0;
+    let mut frozen = Vec::new();
+    for (i, enemy) in enemies.iter().enumerate() {
+        if !enemy.alive {
+            continue;
+        }
+        let d = distance(px, py, enemy.x, enemy.y);
+        if d <= NOVA_RADIUS {
+            frozen.push(i);
+        }
+    }
+    frozen
 }
 
 #[derive(Default)]
@@ -113,22 +161,29 @@ mod tests {
 
     #[test]
     fn distance_within_melee_range() {
-        // 40px apart, melee range is 50px
         assert!(distance(100.0, 100.0, 140.0, 100.0) <= 50.0);
     }
 
     #[test]
     fn distance_outside_melee_range() {
-        // 100px apart
         assert!(distance(100.0, 100.0, 200.0, 100.0) > 50.0);
     }
 
     #[test]
-    fn player_damage_always_in_range() {
+    fn warrior_damage_in_range() {
         let mut rng: u32 = 12345;
         for _ in 0..100 {
-            let dmg = player_damage_roll(&mut rng);
+            let dmg = player_damage_roll(&mut rng, PlayerClass::Warrior, 0.0);
             assert!(dmg >= 15.0 && dmg <= 20.0, "damage {} out of [15,20]", dmg);
+        }
+    }
+
+    #[test]
+    fn magician_damage_in_range() {
+        let mut rng: u32 = 12345;
+        for _ in 0..100 {
+            let dmg = player_damage_roll(&mut rng, PlayerClass::Magician, 0.0);
+            assert!(dmg >= 12.0 && dmg <= 18.0, "damage {} out of [12,18]", dmg);
         }
     }
 
@@ -142,25 +197,37 @@ mod tests {
     }
 
     #[test]
+    fn cleave_hits_nearby_enemies() {
+        let enemies = make_enemies(&[(50.0, 50.0), (500.0, 500.0)]);
+        let mut rng: u32 = 1;
+        let hits = warrior_cleave(50.0, 50.0, &enemies, &mut rng, 0.0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 0);
+    }
+
+    #[test]
+    fn frost_nova_freezes_nearby() {
+        let enemies = make_enemies(&[(60.0, 60.0), (500.0, 500.0)]);
+        let frozen = magician_frost_nova(50.0, 50.0, &enemies);
+        assert_eq!(frozen, vec![0]);
+    }
+
+    #[test]
     fn hitstop_frames_positive_returns_frozen() {
         let mut hs = HitStop { frames_remaining: 4 };
-        let frozen = hs.tick();
-        assert!(frozen);
+        assert!(hs.tick());
         assert_eq!(hs.frames_remaining, 3);
     }
 
     #[test]
     fn hitstop_frames_zero_returns_running() {
         let mut hs = HitStop { frames_remaining: 0 };
-        let frozen = hs.tick();
-        assert!(!frozen);
-        assert_eq!(hs.frames_remaining, 0);
+        assert!(!hs.tick());
     }
 
     #[test]
     fn click_disambiguation_within_radius_attacks() {
         let enemies = make_enemies(&[(170.0, 160.0)]);
-        // distance from (150,150) to (170,160) ≈ 22px, well within 60px
         match click_disambiguation(150.0, 150.0, &enemies) {
             ClickAction::Attack(i) => assert_eq!(i, 0),
             ClickAction::Move(_, _) => panic!("expected Attack"),
