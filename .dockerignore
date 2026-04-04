@@ -1,0 +1,7 @@
+target/
+static/pkg/
+.git/
+.gstack/
+.claude/
+*.pyc
+__pycache__/

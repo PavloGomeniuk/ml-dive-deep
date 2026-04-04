@@ -9,7 +9,10 @@ mod items;
 mod overlay;
 mod particles;
 mod renderer;
+mod shop;
+mod sprites;
 mod title;
+mod world_map;
 
 use game::GameState;
 
