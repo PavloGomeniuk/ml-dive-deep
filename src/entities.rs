@@ -192,4 +192,22 @@ mod tests {
         p.equipment[0] = Some(ItemKind::Sword);
         assert!(p.damage_bonus() > 0.0);
     }
+
+    // Regression: ISSUE-002 — Staff and Sword must occupy different equipment slots
+    // Found by /qa on 2026-04-04
+    // Report: .gstack/qa-reports/qa-report-localhost-2026-04-04.md
+    #[test]
+    fn item_slots_are_distinct() {
+        assert_ne!(ItemKind::Sword.slot(), ItemKind::Staff.slot());
+        assert_ne!(ItemKind::Sword.slot(), ItemKind::Tome.slot());
+        assert_ne!(ItemKind::Staff.slot(), ItemKind::Tome.slot());
+    }
+
+    #[test]
+    fn all_item_slots_in_bounds() {
+        let slots = [ItemKind::Sword.slot(), ItemKind::Staff.slot(), ItemKind::Tome.slot()];
+        for s in &slots {
+            assert!(*s < 3, "slot {} out of bounds for equipment[3]", s);
+        }
+    }
 }
