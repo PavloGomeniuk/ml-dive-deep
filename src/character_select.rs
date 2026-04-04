@@ -33,7 +33,7 @@ pub fn render(ctx: &CanvasRenderingContext2d, selected: Option<usize>) {
 
     // Header
     sf(ctx, "#d4af37");
-    ctx.set_font("bold 14px 'Courier New', monospace");
+    ctx.set_font("bold 14px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text("CHOOSE YOUR FATE", w / 2.0 - 108.0, 45.0);
 
     // Divider
@@ -50,7 +50,7 @@ pub fn render(ctx: &CanvasRenderingContext2d, selected: Option<usize>) {
 
     // Hint bar
     sf(ctx, "#3a3a5a");
-    ctx.set_font("10px 'Courier New', monospace");
+    ctx.set_font("10px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text(
         "click to select  \u{00B7}  ENTER to begin  \u{00B7}  ESC for title",
         w / 2.0 - 162.0,
@@ -92,7 +92,7 @@ fn draw_card(
 
     // Class name
     sf(ctx, "#d4af37");
-    ctx.set_font("bold 16px 'Courier New', monospace");
+    ctx.set_font("bold 16px 'VT323', 'Courier New', monospace");
     let name = match class {
         PlayerClass::Warrior => "WARRIOR",
         PlayerClass::Magician => "MAGICIAN",
@@ -102,7 +102,7 @@ fn draw_card(
 
     // Stats
     sf(ctx, "#8888aa");
-    ctx.set_font("11px 'Courier New', monospace");
+    ctx.set_font("11px 'VT323', 'Courier New', monospace");
     let (hp, mana) = match class {
         PlayerClass::Warrior => ("HP: 150  ATK: 15-20", "MANA: 30"),
         PlayerClass::Magician => ("HP: 90   ATK: 12-18", "MANA: 100"),
@@ -123,11 +123,11 @@ fn draw_card(
         PlayerClass::Magician => ("\u{2744}", "FROST NOVA  [Space]", "AoE freeze, 70px radius, 3s CD"),
     };
     sf(ctx, "#d4af37");
-    ctx.set_font("bold 12px 'Courier New', monospace");
+    ctx.set_font("bold 12px 'VT323', 'Courier New', monospace");
     let ability_text = format!("{} {}", ability_icon, ability_name);
     let _ = ctx.fill_text(&ability_text, rx + 18.0, ab_y + 20.0);
     sf(ctx, "#5a5a7a");
-    ctx.set_font("10px 'Courier New', monospace");
+    ctx.set_font("10px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text(ability_desc, rx + 18.0, ab_y + 38.0);
 
     // Selected indicator
@@ -135,7 +135,7 @@ fn draw_card(
         sf(ctx, "rgba(212,175,55,0.08)");
         fill_rect(ctx, rx, ry, rw, rh);
         sf(ctx, "#d4af37");
-        ctx.set_font("10px 'Courier New', monospace");
+        ctx.set_font("10px 'VT323', 'Courier New', monospace");
         let _ = ctx.fill_text("SELECTED - ENTER to confirm", rx + 20.0, ry + rh - 14.0);
     }
 }

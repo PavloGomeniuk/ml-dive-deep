@@ -36,12 +36,12 @@ pub fn render(ctx: &CanvasRenderingContext2d) {
 
     // Title
     sf(ctx, "#d4af37");
-    ctx.set_font("bold 44px 'Courier New', monospace");
+    ctx.set_font("bold 44px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text("MEDIEVAL RPG", div_x + 14.0, 160.0);
 
     // Subtitle
     sf(ctx, "#5a3a15");
-    ctx.set_font("12px 'Courier New', monospace");
+    ctx.set_font("12px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text("built with Rust + WebAssembly  \u{00B7}  zero npm", div_x + 28.0, 185.0);
 
     // Bottom divider
@@ -61,12 +61,12 @@ pub fn render(ctx: &CanvasRenderingContext2d) {
     ctx.set_line_width(2.0);
     ctx.stroke_rect(bx, by, bw, bh);
     sf(ctx, "#d4af37");
-    ctx.set_font("bold 16px 'Courier New', monospace");
+    ctx.set_font("bold 16px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text("\u{2694} NEW GAME", bx + 36.0, by + 31.0);
 
     // Flavor text
     sf(ctx, "#3a3a5a");
-    ctx.set_font("10px 'Courier New', monospace");
+    ctx.set_font("10px 'VT323', 'Courier New', monospace");
     let _ = ctx.fill_text("\u{2620} ENTER IF YOU DARE \u{2620}", w / 2.0 - 82.0, h - 30.0);
 }
 

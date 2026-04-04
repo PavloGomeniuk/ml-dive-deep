@@ -1,4 +1,5 @@
 use crate::entities::Enemy;
+use crate::items::{Chest, spawn_chest_loot};
 
 pub struct Room {
     pub x: f32,
@@ -49,10 +50,31 @@ pub struct DungeonMap {
     pub current_room: usize,
     /// Per-room enemy snapshots. Loaded into gs.enemies on room switch.
     pub enemy_cache: Vec<Vec<Enemy>>,
+    /// Per-room chest snapshots. Loaded into gs.chests on room switch.
+    pub chest_cache: Vec<Vec<Chest>>,
+}
+
+fn make_room0_chests(rng: &mut u32) -> Vec<Chest> {
+    vec![
+        Chest::new(560.0, 260.0, spawn_chest_loot(rng)),
+        Chest::new(160.0, 80.0, spawn_chest_loot(rng)),
+    ]
+}
+
+fn make_room1_chests(rng: &mut u32) -> Vec<Chest> {
+    vec![
+        Chest::new(320.0, 240.0, spawn_chest_loot(rng)),
+    ]
 }
 
 impl DungeonMap {
     pub fn new() -> Self {
+        Self::new_with_seed(12345)
+    }
+
+    pub fn new_with_seed(seed: u32) -> Self {
+        let mut rng = seed.max(1);
+
         let rooms = vec![
             Room { x: 50.0, y: 30.0, w: 700.0, h: 320.0, index: 0 },
             Room { x: 50.0, y: 30.0, w: 700.0, h: 320.0, index: 1 },
@@ -70,10 +92,14 @@ impl DungeonMap {
             Enemy::new(480.0, 100.0),
         ];
 
+        let room0_chests = make_room0_chests(&mut rng);
+        let room1_chests = make_room1_chests(&mut rng);
+
         DungeonMap {
             rooms,
             current_room: 0,
             enemy_cache: vec![room0_enemies, room1_enemies],
+            chest_cache: vec![room0_chests, room1_chests],
         }
     }
 
@@ -94,7 +120,6 @@ impl DungeonMap {
         let (dx, dy) = room.door_center();
         let dist = ((px - dx) * (px - dx) + (py - dy) * (py - dy)).sqrt();
         if dist <= TRIGGER_RADIUS {
-            // Determine target room
             let target = if self.current_room == 0 { 1 } else { 0 };
             Some(target)
         } else {
@@ -142,8 +167,19 @@ mod tests {
     #[test]
     fn switch_room_bounds_check() {
         let mut map = DungeonMap::new();
-        // Should not panic, should saturate to last valid index
         map.switch_room(usize::MAX);
         assert_eq!(map.current_room, 1);
+    }
+
+    #[test]
+    fn room0_has_chests() {
+        let map = DungeonMap::new();
+        assert!(!map.chest_cache[0].is_empty());
+    }
+
+    #[test]
+    fn room1_has_chests() {
+        let map = DungeonMap::new();
+        assert!(!map.chest_cache[1].is_empty());
     }
 }
