@@ -69,7 +69,7 @@ impl ItemKind {
     pub fn slot(&self) -> usize {
         match self {
             ItemKind::Sword => 0,
-            ItemKind::Staff => 0,
+            ItemKind::Staff => 1,
             ItemKind::Tome => 2,
         }
     }
