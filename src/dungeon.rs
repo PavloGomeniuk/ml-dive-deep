@@ -1,126 +1,102 @@
-use crate::entities::Enemy;
-use crate::items::{Chest, spawn_chest_loot};
+//! Dungeon room layout — pure data, no Bevy types.
+//! Coordinates are in Bevy world-space (Y-up, origin at screen centre).
+//! Canvas coords map as: bevy_x = canvas_x - 400, bevy_y = 250 - canvas_y.
+
+const WALL_THICKNESS: f32 = 20.0;
 
 pub struct Room {
-    pub x: f32,
-    pub y: f32,
+    /// Centre of the room in Bevy world coords.
+    pub cx: f32,
+    pub cy: f32,
     pub w: f32,
     pub h: f32,
     pub index: usize,
 }
 
 impl Room {
-    pub fn floor_x(&self) -> f32 { self.x + 20.0 }
-    pub fn floor_y(&self) -> f32 { self.y + 20.0 }
-    pub fn floor_w(&self) -> f32 { self.w - 40.0 }
-    pub fn floor_h(&self) -> f32 { self.h - 40.0 }
+    pub fn floor_w(&self) -> f32 { self.w - 2.0 * WALL_THICKNESS }
+    pub fn floor_h(&self) -> f32 { self.h - 2.0 * WALL_THICKNESS }
+    pub fn floor_x_min(&self) -> f32 { self.cx - self.floor_w() / 2.0 }
+    pub fn floor_x_max(&self) -> f32 { self.cx + self.floor_w() / 2.0 }
+    pub fn floor_y_min(&self) -> f32 { self.cy - self.floor_h() / 2.0 }
+    pub fn floor_y_max(&self) -> f32 { self.cy + self.floor_h() / 2.0 }
 
-    pub fn contains(&self, px: f32, py: f32) -> bool {
-        px >= self.floor_x()
-            && px <= self.floor_x() + self.floor_w()
-            && py >= self.floor_y()
-            && py <= self.floor_y() + self.floor_h()
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.floor_x_min()
+            && x <= self.floor_x_max()
+            && y >= self.floor_y_min()
+            && y <= self.floor_y_max()
     }
 
-    /// Center of the door for this room.
-    /// Room 0: door at bottom-center of floor.
-    /// Room 1: door at top-center of floor (to go back).
-    pub fn door_center(&self) -> (f32, f32) {
-        let cx = self.floor_x() + self.floor_w() / 2.0;
+    /// Door centre position.
+    /// Room 0: exit door at floor bottom (lower Y — forward progression).
+    /// Room N>0: exit door at floor top (higher Y — return door).
+    pub fn exit_door(&self) -> (f32, f32) {
         match self.index {
-            0 => (cx, self.floor_y() + self.floor_h() - 5.0),
-            _ => (cx, self.floor_y() + 5.0),
+            0 => (self.cx, self.floor_y_min() + 5.0),
+            _ => (self.cx, self.floor_y_max() - 5.0),
         }
     }
 
-    /// Spawn point for player when arriving into this room.
+    /// Where the player spawns when arriving into this room.
     pub fn entry_spawn(&self) -> (f32, f32) {
-        let cx = self.floor_x() + self.floor_w() / 2.0;
         match self.index {
-            // Arriving from room 1: spawn near bottom, away from door
-            0 => (cx, self.floor_y() + self.floor_h() - 40.0),
-            // Arriving from room 0: spawn near top, away from door
-            _ => (cx, self.floor_y() + 40.0),
+            // Entering from room 1: player appears near bottom
+            0 => (self.cx, self.floor_y_min() + 50.0),
+            // Entering from room 0: player appears near top
+            _ => (self.cx, self.floor_y_max() - 50.0),
         }
     }
 }
 
+/// Dungeon map: ordered list of rooms + current room index.
+/// Per-room cleared state is tracked here (enemies defeated).
 pub struct DungeonMap {
     pub rooms: Vec<Room>,
     pub current_room: usize,
-    /// Per-room enemy snapshots. Loaded into gs.enemies on room switch.
-    pub enemy_cache: Vec<Vec<Enemy>>,
-    /// Per-room chest snapshots. Loaded into gs.chests on room switch.
-    pub chest_cache: Vec<Vec<Chest>>,
-}
-
-fn make_room0_chests(rng: &mut u32) -> Vec<Chest> {
-    vec![
-        Chest::new(560.0, 260.0, spawn_chest_loot(rng)),
-        Chest::new(160.0, 80.0, spawn_chest_loot(rng)),
-    ]
-}
-
-fn make_room1_chests(rng: &mut u32) -> Vec<Chest> {
-    vec![
-        Chest::new(320.0, 240.0, spawn_chest_loot(rng)),
-    ]
+    /// true once all enemies in the room are dead (unlocks exit door).
+    pub rooms_cleared: Vec<bool>,
 }
 
 impl DungeonMap {
     pub fn new() -> Self {
-        Self::new_with_seed(12345)
-    }
-
-    pub fn new_with_seed(seed: u32) -> Self {
-        let mut rng = seed.max(1);
-
+        // Room layout in Bevy coords — two rooms stacked vertically.
+        // Same spatial footprint as v2 (700×320 at canvas (50,30)).
         let rooms = vec![
-            Room { x: 50.0, y: 30.0, w: 700.0, h: 320.0, index: 0 },
-            Room { x: 50.0, y: 30.0, w: 700.0, h: 320.0, index: 1 },
+            Room { cx: 0.0, cy: 60.0, w: 700.0, h: 320.0, index: 0 },
+            Room { cx: 0.0, cy: 60.0, w: 700.0, h: 320.0, index: 1 },
         ];
-
-        let room0_enemies = vec![
-            Enemy::new(200.0, 150.0),
-            Enemy::new(600.0, 150.0),
-            Enemy::new(600.0, 290.0),
-        ];
-        let room1_enemies = vec![
-            Enemy::new(250.0, 120.0),
-            Enemy::new(550.0, 200.0),
-            Enemy::new(380.0, 280.0),
-            Enemy::new(480.0, 100.0),
-        ];
-
-        let room0_chests = make_room0_chests(&mut rng);
-        let room1_chests = make_room1_chests(&mut rng);
-
+        let room_count = rooms.len();
         DungeonMap {
             rooms,
             current_room: 0,
-            enemy_cache: vec![room0_enemies, room1_enemies],
-            chest_cache: vec![room0_chests, room1_chests],
+            rooms_cleared: vec![false; room_count],
         }
     }
 
-    pub fn current_room(&self) -> &Room {
+    pub fn current(&self) -> &Room {
         &self.rooms[self.current_room]
     }
 
-    /// Switch to room at `idx`, saturating-clamped to valid range.
+    /// Switch room, clamped to valid range.
     pub fn switch_room(&mut self, idx: usize) {
-        let idx = idx.min(self.rooms.len().saturating_sub(1));
-        self.current_room = idx;
+        self.current_room = idx.min(self.rooms.len().saturating_sub(1));
     }
 
-    /// Target room index if player (px, py) is in the door trigger zone (30px radius).
+    /// Returns the target room if the player is within 30 px of the exit door.
     pub fn check_transition(&self, px: f32, py: f32) -> Option<usize> {
-        const TRIGGER_RADIUS: f32 = 30.0;
-        let room = self.current_room();
-        let (dx, dy) = room.door_center();
-        let dist = ((px - dx) * (px - dx) + (py - dy) * (py - dy)).sqrt();
-        if dist <= TRIGGER_RADIUS {
-            let target = if self.current_room == 0 { 1 } else { 0 };
+        if !self.rooms_cleared[self.current_room] {
+            return None; // door locked until room is cleared
+        }
+        const TRIGGER_R: f32 = 30.0;
+        let (dx, dy) = self.current().exit_door();
+        let dist = ((px - dx).powi(2) + (py - dy).powi(2)).sqrt();
+        if dist <= TRIGGER_R {
+            let target = if self.current_room + 1 < self.rooms.len() {
+                self.current_room + 1
+            } else {
+                0
+            };
             Some(target)
         } else {
             None
@@ -128,58 +104,60 @@ impl DungeonMap {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn room0_door_at_bottom() {
+    fn room0_exit_at_floor_bottom() {
         let map = DungeonMap::new();
-        let (_, dy) = map.rooms[0].door_center();
-        let floor_bottom = map.rooms[0].floor_y() + map.rooms[0].floor_h();
-        assert!(dy < floor_bottom);
-        assert!(dy > floor_bottom - 10.0);
+        let (_, dy) = map.rooms[0].exit_door();
+        assert!(dy < map.rooms[0].cy); // door is below centre
+        assert!(dy >= map.rooms[0].floor_y_min());
     }
 
     #[test]
-    fn room1_door_at_top() {
+    fn room1_exit_at_floor_top() {
         let map = DungeonMap::new();
-        let (_, dy) = map.rooms[1].door_center();
-        let floor_top = map.rooms[1].floor_y();
-        assert!(dy > floor_top);
-        assert!(dy < floor_top + 10.0);
+        let (_, dy) = map.rooms[1].exit_door();
+        assert!(dy > map.rooms[1].cy); // door is above centre
+        assert!(dy <= map.rooms[1].floor_y_max());
     }
 
     #[test]
-    fn transition_triggered_in_range() {
+    fn transition_locked_if_room_not_cleared() {
         let map = DungeonMap::new();
-        let (dx, dy) = map.rooms[0].door_center();
+        let (dx, dy) = map.rooms[0].exit_door();
+        // Not cleared — should return None even when standing on door
+        assert!(map.check_transition(dx, dy).is_none());
+    }
+
+    #[test]
+    fn transition_triggers_when_cleared_and_in_range() {
+        let mut map = DungeonMap::new();
+        map.rooms_cleared[0] = true;
+        let (dx, dy) = map.rooms[0].exit_door();
         assert!(map.check_transition(dx, dy).is_some());
     }
 
     #[test]
-    fn transition_not_triggered_far_away() {
-        let map = DungeonMap::new();
-        assert!(map.check_transition(10.0, 10.0).is_none());
+    fn transition_returns_none_far_from_door() {
+        let mut map = DungeonMap::new();
+        map.rooms_cleared[0] = true;
+        assert!(map.check_transition(999.0, 999.0).is_none());
     }
 
     #[test]
     fn switch_room_bounds_check() {
         let mut map = DungeonMap::new();
         map.switch_room(usize::MAX);
-        assert_eq!(map.current_room, 1);
+        assert_eq!(map.current_room, map.rooms.len() - 1);
     }
 
     #[test]
-    fn room0_has_chests() {
+    fn room_contains_own_centre() {
         let map = DungeonMap::new();
-        assert!(!map.chest_cache[0].is_empty());
-    }
-
-    #[test]
-    fn room1_has_chests() {
-        let map = DungeonMap::new();
-        assert!(!map.chest_cache[1].is_empty());
+        let r = &map.rooms[0];
+        assert!(r.contains(r.cx, r.cy));
     }
 }

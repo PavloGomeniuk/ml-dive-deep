@@ -1,9 +1,12 @@
-import init, { Game } from './pkg/game.js';
+// Medieval RPG v3 — Bevy/WASM entry + Web Audio synthesis
+// Bevy owns the game loop. JS handles audio (no Rust audio crate needed).
 
-const canvas = document.getElementById('canvas');
+import init from './pkg/game.js';
+
 const loading = document.getElementById('loading');
 const errorDiv = document.getElementById('error');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
+const canvas = document.getElementById('canvas');
 
 // ── Web Audio ────────────────────────────────────────────────────────────────
 
@@ -14,9 +17,9 @@ function getAudio() {
   return audioCtx;
 }
 
-function masterGain(ctx) {
+function masterGain(ctx, vol = 0.3) {
   const g = ctx.createGain();
-  g.gain.value = 0.3;
+  g.gain.value = vol;
   g.connect(ctx.destination);
   return g;
 }
@@ -90,58 +93,33 @@ window.__playTransitionSound = function () {
   } catch (_) {}
 };
 
-// ── Game loop ────────────────────────────────────────────────────────────────
+// ── Boot ─────────────────────────────────────────────────────────────────────
 
 async function start() {
   try {
+    // init() calls #[wasm_bindgen(start)] which runs Bevy's App::run().
+    // Bevy sets up its own requestAnimationFrame loop internally.
     await init();
-    const game = new Game();
-
     loading.style.display = 'none';
-
-    let last = performance.now();
-    function frame(ts) {
-      const dt = Math.min((ts - last) / 1000, 0.05);
-      last = ts;
-      game.tick(dt);
-      requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
-
-    // Click handler with coordinate scaling
-    canvas.addEventListener('click', (e) => {
-      const r = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / r.width;
-      const scaleY = canvas.height / r.height;
-      game.on_click((e.clientX - r.left) * scaleX, (e.clientY - r.top) * scaleY);
-    });
-
-    // Keyboard handler
-    document.addEventListener('keydown', (e) => {
-      // Prevent space from scrolling the page
-      if (e.key === ' ') e.preventDefault();
-      game.on_key(e.key);
-    });
-
-    // Fullscreen button
-    fullscreenBtn.addEventListener('click', () => {
-      if (!document.fullscreenElement) {
-        canvas.requestFullscreen().catch(() => {});
-      } else {
-        document.exitFullscreen().catch(() => {});
-      }
-    });
-
-    // Update fullscreen button icon based on state
-    document.addEventListener('fullscreenchange', () => {
-      fullscreenBtn.textContent = document.fullscreenElement ? '\u2715' : '\u26F6';
-    });
-
+    canvas.focus();
   } catch (err) {
     loading.style.display = 'none';
     errorDiv.style.display = 'block';
     errorDiv.textContent = 'Failed to load WASM:\n' + err;
   }
 }
+
+// Fullscreen toggle
+fullscreenBtn.addEventListener('click', () => {
+  if (!document.fullscreenElement) {
+    canvas.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+});
+
+document.addEventListener('fullscreenchange', () => {
+  fullscreenBtn.textContent = document.fullscreenElement ? '\u2715' : '\u26F6';
+});
 
 start();

@@ -1,56 +1,77 @@
+use bevy::prelude::*;
+use bevy::window::WindowResolution;
 use wasm_bindgen::prelude::*;
+#[allow(unused_imports)]
+use js_sys;
 
-mod character_select;
+mod audio;
+mod char_select;
 mod combat;
+mod components;
+mod dead;
 mod dungeon;
 mod entities;
-mod game;
 mod items;
-mod overlay;
-mod particles;
-mod renderer;
-mod shop;
-mod sprites;
+mod playing;
+mod resources;
+mod state;
 mod title;
-mod world_map;
 
-use game::GameState;
+use state::GameState;
+use resources::*;
+use playing::{PlayingPlugin, DungeonRes, update_hud};
 
-#[wasm_bindgen]
-pub struct Game {
-    state: GameState,
+/// Entry point for WASM. Called automatically by `wasm-pack` / `init()` in JS.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
+pub fn run() {
+    console_error_panic_hook::set_once();
+
+    // Seed RNG from Math.random() on WASM.
+    let seed = (js_sys::Math::random() * u32::MAX as f64) as u32;
+    let seed = seed.max(1);
+
+    App::new()
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Medieval RPG".to_string(),
+                        canvas: Some("#canvas".into()),
+                        resolution: WindowResolution::new(800.0, 500.0),
+                        resizable: false,
+                        fit_canvas_to_parent: false,
+                        prevent_default_event_handling: true,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
+        // ── States ───────────────────────────────────────────────────────────
+        .init_state::<GameState>()
+        .enable_state_scoped_entities::<GameState>()
+        // ── Resources ────────────────────────────────────────────────────────
+        .insert_resource(Rng::new(seed))
+        .insert_resource(Gold::default())
+        .insert_resource(ScreenShakeRes::default())
+        .insert_resource(HudFlash::default())
+        .insert_resource(SelectedClass::default())
+        .insert_resource(RunStats::default())
+        .insert_resource(CharSelectHighlight::default())
+        .insert_resource(PendingTransition::default())
+        // ── Plugins ──────────────────────────────────────────────────────────
+        .add_plugins(title::TitlePlugin)
+        .add_plugins(char_select::CharSelectPlugin)
+        .add_plugins(PlayingPlugin)
+        .add_plugins(dead::DeadPlugin)
+        // ── Camera ───────────────────────────────────────────────────────────
+        .add_systems(Startup, spawn_camera)
+        // ── HUD live updates ─────────────────────────────────────────────────
+        .add_systems(Update, update_hud.run_if(in_state(GameState::Playing)))
+        // ── Background colour ────────────────────────────────────────────────
+        .insert_resource(ClearColor(Color::srgb(0.039, 0.039, 0.063)))
+        .run();
 }
 
-#[wasm_bindgen]
-impl Game {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Result<Game, JsValue> {
-        console_error_panic_hook::set_once();
-        let state = GameState::new()?;
-        Ok(Game { state })
-    }
-
-    pub fn tick(&mut self, dt: f32) {
-        self.state.tick(dt);
-    }
-
-    pub fn on_click(&mut self, x: f32, y: f32) {
-        self.state.on_click(x, y);
-    }
-
-    pub fn on_key(&mut self, key: &str) {
-        self.state.on_key(key);
-    }
-
-    pub fn get_frame_ms(&self) -> f32 {
-        self.state.last_frame_ms
-    }
-
-    pub fn get_entity_count(&self) -> u32 {
-        self.state.enemies.iter().filter(|e| e.alive).count() as u32 + 1
-    }
-
-    pub fn get_wasm_memory_kb(&self) -> u32 {
-        crate::overlay::get_memory_kb()
-    }
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn(Camera2d);
 }

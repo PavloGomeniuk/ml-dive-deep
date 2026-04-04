@@ -1,76 +1,121 @@
-use wasm_bindgen::JsValue;
-use web_sys::CanvasRenderingContext2d;
-use crate::renderer::{CANVAS_W, CANVAS_H};
+use bevy::prelude::*;
+use crate::state::GameState;
+use crate::components::{Z_OVERLAY, SCREEN_W, SCREEN_H};
 
-// Button rect: x, y, w, h
-pub const NEW_GAME_BTN: (f32, f32, f32, f32) = (300.0, 210.0, 200.0, 50.0);
-
-fn sf(ctx: &CanvasRenderingContext2d, color: &str) {
-    ctx.set_fill_style(&JsValue::from_str(color));
+pub struct TitlePlugin;
+impl Plugin for TitlePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(GameState::Title), setup_title)
+           .add_systems(Update, handle_title_input.run_if(in_state(GameState::Title)));
+    }
 }
 
-fn ss(ctx: &CanvasRenderingContext2d, color: &str) {
-    ctx.set_stroke_style(&JsValue::from_str(color));
-}
-
-pub fn render(ctx: &CanvasRenderingContext2d) {
-    let w = CANVAS_W as f64;
-    let h = CANVAS_H as f64;
-
-    // Background
-    sf(ctx, "#0d0d1a");
-    ctx.fill_rect(0.0, 0.0, w, h);
-
-    // Center highlight
-    sf(ctx, "#1a1420");
-    ctx.fill_rect(w / 4.0, h / 6.0, w / 2.0, h * 2.0 / 3.0);
-
-    // Top divider
-    ss(ctx, "#5a3a15");
-    ctx.set_line_width(1.0);
-    let div_x = (w - 400.0) / 2.0;
-    ctx.begin_path();
-    ctx.move_to(div_x, 110.0);
-    ctx.line_to(div_x + 400.0, 110.0);
-    ctx.stroke();
+fn setup_title(mut commands: Commands) {
+    // Dark background
+    commands.spawn((
+        Sprite {
+            color: Color::srgb(0.051, 0.051, 0.102),
+            custom_size: Some(Vec2::new(SCREEN_W, SCREEN_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, Z_OVERLAY),
+        StateScoped(GameState::Title),
+    ));
 
     // Title
-    sf(ctx, "#d4af37");
-    ctx.set_font("bold 44px 'VT323', 'Courier New', monospace");
-    let _ = ctx.fill_text("MEDIEVAL RPG", div_x + 14.0, 160.0);
+    commands.spawn((
+        Text2d::new("MEDIEVAL RPG"),
+        TextFont { font_size: 52.0, ..default() },
+        TextColor(Color::srgb(0.831, 0.686, 0.216)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        Transform::from_xyz(0.0, 80.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
 
     // Subtitle
-    sf(ctx, "#5a3a15");
-    ctx.set_font("12px 'VT323', 'Courier New', monospace");
-    let _ = ctx.fill_text("built with Rust + WebAssembly  \u{00B7}  zero npm", div_x + 28.0, 185.0);
+    commands.spawn((
+        Text2d::new("Built with Rust + WebAssembly · zero npm"),
+        TextFont { font_size: 14.0, ..default() },
+        TextColor(Color::srgb(0.353, 0.227, 0.082)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        Transform::from_xyz(0.0, 42.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
 
-    // Bottom divider
-    ss(ctx, "#5a3a15");
-    ctx.set_line_width(1.0);
-    ctx.begin_path();
-    ctx.move_to(div_x, 198.0);
-    ctx.line_to(div_x + 400.0, 198.0);
-    ctx.stroke();
+    // Divider
+    commands.spawn((
+        Sprite {
+            color: Color::srgb(0.353, 0.227, 0.082),
+            custom_size: Some(Vec2::new(400.0, 1.0)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 15.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
 
-    // NEW GAME button
-    let (bx, by, bw, bh) = NEW_GAME_BTN;
-    let (bx, by, bw, bh) = (bx as f64, by as f64, bw as f64, bh as f64);
-    sf(ctx, "rgba(0,0,0,0)");
-    ctx.fill_rect(bx, by, bw, bh);
-    ss(ctx, "#d4af37");
-    ctx.set_line_width(2.0);
-    ctx.stroke_rect(bx, by, bw, bh);
-    sf(ctx, "#d4af37");
-    ctx.set_font("bold 16px 'VT323', 'Courier New', monospace");
-    let _ = ctx.fill_text("\u{2694} NEW GAME", bx + 36.0, by + 31.0);
+    // NEW GAME button outline
+    commands.spawn((
+        Sprite {
+            color: Color::srgba(0.831, 0.686, 0.216, 0.15),
+            custom_size: Some(Vec2::new(200.0, 42.0)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, -20.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
 
-    // Flavor text
-    sf(ctx, "#3a3a5a");
-    ctx.set_font("10px 'VT323', 'Courier New', monospace");
-    let _ = ctx.fill_text("\u{2620} ENTER IF YOU DARE \u{2620}", w / 2.0 - 82.0, h - 30.0);
+    // NEW GAME text
+    commands.spawn((
+        Text2d::new("⚔  NEW GAME"),
+        TextFont { font_size: 20.0, ..default() },
+        TextColor(Color::srgb(0.831, 0.686, 0.216)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        Transform::from_xyz(0.0, -20.0, Z_OVERLAY + 0.6),
+        StateScoped(GameState::Title),
+    ));
+
+    // Key hint
+    commands.spawn((
+        Text2d::new("click · ENTER · SPACE"),
+        TextFont { font_size: 11.0, ..default() },
+        TextColor(Color::srgb(0.25, 0.25, 0.35)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        Transform::from_xyz(0.0, -55.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
+
+    // Flavour
+    commands.spawn((
+        Text2d::new("☠  ENTER IF YOU DARE  ☠"),
+        TextFont { font_size: 11.0, ..default() },
+        TextColor(Color::srgb(0.18, 0.18, 0.28)),
+        TextLayout::new_with_justify(JustifyText::Center),
+        Transform::from_xyz(0.0, -170.0, Z_OVERLAY + 0.5),
+        StateScoped(GameState::Title),
+    ));
 }
 
-pub fn hit_test_new_game(x: f32, y: f32) -> bool {
-    let (bx, by, bw, bh) = NEW_GAME_BTN;
-    x >= bx && x <= bx + bw && y >= by && y <= by + bh
+fn handle_title_input(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform)>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+        next.set(GameState::CharacterSelect);
+        return;
+    }
+    if mouse.just_pressed(MouseButton::Left) {
+        if let (Ok(win), Ok((cam, cam_tf))) = (windows.get_single(), camera_q.get_single()) {
+            if let Some(cursor) = win.cursor_position() {
+                if let Ok(world) = cam.viewport_to_world_2d(cam_tf, cursor) {
+                    // Button region: ±100 x, centred at y=-20
+                    if world.x.abs() < 110.0 && (world.y + 20.0).abs() < 28.0 {
+                        next.set(GameState::CharacterSelect);
+                    }
+                }
+            }
+        }
+    }
 }
