@@ -308,10 +308,45 @@ async fn handle_play_bot(
     game: GameType,
     state: &crate::AppStateHandle,
 ) {
-    let mut s = state.write().await;
     let room_id = Uuid::new_v4();
     let bot_id = Uuid::new_v4();
-    start_game(&mut s, room_id, game, player_id, bot_id, false, true);
+    {
+        let mut s = state.write().await;
+        start_game(&mut s, room_id, game, player_id, bot_id, false, true);
+    }
+    // If the bot is the attacker (player index 1 is bot, so bot_idx=1 but attacker could be 0 or 1)
+    // Check and fire bot's first move after releasing the write lock.
+    trigger_bot_move_if_needed(room_id, state).await;
+}
+
+/// After game starts or after a human move, trigger the bot's next move if it's the bot's turn.
+async fn trigger_bot_move_if_needed(room_id: Uuid, state: &crate::AppStateHandle) {
+    let bot_action = {
+        let s = state.read().await;
+        let room = match s.rooms.get(&room_id) {
+            Some(r) => r,
+            None => return,
+        };
+        let bot_idx = if room.is_bot[1] { Some(1usize) } else if room.is_bot[0] { Some(0) } else { return };
+        let bidx = bot_idx.unwrap();
+        if let GameInstance::Durak(g) = &room.game {
+            let bot_should_move =
+                (g.attacker == bidx && matches!(g.state, shared::durak::DurakState::PlayerAttacks))
+                || (g.defender() == bidx && matches!(g.state, shared::durak::DurakState::PlayerDefends));
+            if bot_should_move {
+                bot::durak_move(g, bidx).map(|a| (a, bidx))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some((action, bot_idx)) = bot_action {
+        let mut s = state.write().await;
+        handle_durak_move(&mut s, room_id, bot_idx, action).await;
+    }
 }
 
 fn start_game(
@@ -745,8 +780,12 @@ fn broadcast_lobby_update(s: &AppState) {
     }).collect();
 
     let msg = ServerMessage::LobbyUpdate { players };
+    // Only send to players currently in the lobby — in-game players don't need lobby updates
+    // and mixing lobby updates into game message streams causes ordering confusion.
     for player in s.players.values() {
-        let _ = player.tx.try_send(to_json(&msg));
+        if player.status == PlayerStatus::Lobby {
+            let _ = player.tx.try_send(to_json(&msg));
+        }
     }
 }
 
