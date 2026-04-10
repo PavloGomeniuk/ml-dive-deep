@@ -1,0 +1,57 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+shared = { path = "../shared" }
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Window",
+  "Document",
+  "HtmlCanvasElement",
+  "HtmlInputElement",
+  "HtmlElement",
+  "HtmlUListElement",
+  "HtmlDetailsElement",
+  "CanvasRenderingContext2d",
+  "WebSocket",
+  "MessageEvent",
+  "Element",
+  "EventTarget",
+  "MouseEvent",
+  "KeyboardEvent",
+  "Performance",
+  "Storage",
+  "Location",
+  "DomRect",
+  "DomTokenList",
+  "CssStyleDeclaration",
+  "CloseEvent",
+  "ErrorEvent",
+  "Node",
+  "Text",
+  "Event",
+  "FocusEvent",
+  "console",
+  "BinaryType",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]

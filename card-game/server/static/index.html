@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CARD ARENA</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep:    #0a1628;
+      --bg-panel:   #16213e;
+      --bg-card:    #0f3460;
+      --accent:     #e94560;
+      --accent-dim: #a02a40;
+      --green:      #4caf50;
+      --text:       #eeeeee;
+      --text-dim:   #888888;
+      --border:     #333333;
+      --border-hi:  #1e3a5e;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg-deep);
+      color: var(--text);
+      font-family: monospace;
+      overflow: hidden;
+    }
+
+    /* ── MODALS ── */
+    .overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .overlay.hidden { display: none; }
+
+    .modal {
+      background: var(--bg-panel);
+      border: 1px solid var(--accent);
+      padding: 32px;
+      min-width: 320px;
+      text-align: center;
+    }
+    .modal h1 {
+      font-size: 24px;
+      color: var(--accent);
+      letter-spacing: 4px;
+      margin-bottom: 4px;
+    }
+    .modal .subtitle {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 28px;
+    }
+    .modal input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: monospace;
+      font-size: 14px;
+      text-align: center;
+      margin-bottom: 8px;
+      outline: none;
+    }
+    .modal input[type="text"]:focus { border-color: var(--accent); }
+    .modal .error-msg {
+      font-size: 11px;
+      color: var(--accent);
+      min-height: 16px;
+      margin-bottom: 8px;
+    }
+    .btn {
+      padding: 10px 20px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      font-family: monospace;
+      font-size: 13px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn:hover { background: var(--accent-dim); }
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      margin-top: 8px;
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+
+    /* ── GAME PICKER ── */
+    #picker-screen {
+      position: fixed; inset: 0;
+      background: var(--bg-panel);
+      display: flex; flex-direction: column;
+      padding: 32px;
+      z-index: 100;
+    }
+    #picker-screen.hidden { display: none; }
+
+    .picker-header {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+    .picker-greeting {
+      font-size: 20px;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .picker-sub {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 28px;
+    }
+    .game-cards {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .game-card {
+      flex: 1;
+      border: 2px solid var(--border);
+      padding: 20px;
+      cursor: pointer;
+      background: var(--bg-card);
+      text-align: center;
+      transition: border-color 0.1s;
+    }
+    .game-card:hover, .game-card.selected { border-color: var(--accent); }
+    .game-card-icon { font-size: 36px; margin-bottom: 10px; }
+    .game-card-name { font-size: 15px; color: var(--text); margin-bottom: 4px; }
+    .game-card-desc { font-size: 10px; color: var(--text-dim); }
+
+    .section-label {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    #player-list { border: 1px solid var(--border); max-height: 220px; overflow-y: auto; }
+    .player-row {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+    }
+    .player-row:last-child { border-bottom: none; }
+    .player-row.bot-row { background: #0a0a1a; }
+    .player-badge {
+      font-size: 9px;
+      padding: 2px 6px;
+      background: #1a3a1a;
+      color: var(--green);
+    }
+    .player-badge.busy { background: #2a1a1a; color: var(--text-dim); }
+    .invite-btn {
+      font-size: 10px;
+      padding: 3px 10px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: monospace;
+    }
+    .invite-btn:disabled { background: var(--border); cursor: default; }
+    #picker-empty {
+      padding: 20px;
+      text-align: center;
+      font-size: 11px;
+      color: #555;
+      border: 1px solid var(--border);
+    }
+
+    /* ── INCOMING INVITE BANNER ── */
+    #invite-banner {
+      position: fixed;
+      top: 0; left: 50%;
+      transform: translateX(-50%);
+      background: #7a6000;
+      border: 1px solid #c0a000;
+      padding: 10px 20px;
+      font-size: 12px;
+      z-index: 300;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #invite-banner.hidden { display: none; }
+    #invite-banner .btn-accept {
+      padding: 4px 12px;
+      background: var(--green);
+      color: white;
+      border: none;
+      font-family: monospace;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    #invite-banner .btn-decline {
+      padding: 4px 12px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      font-family: monospace;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    /* ── WAITING OVERLAY ── */
+    #waiting-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 150;
+      font-size: 14px;
+      gap: 16px;
+    }
+    #waiting-overlay.hidden { display: none; }
+    #waiting-overlay .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── GAME SCREEN ── */
+    #game-screen {
+      position: fixed; inset: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #game-screen.hidden { display: none; }
+
+    /* Status bar */
+    #status-bar {
+      height: 36px;
+      background: #0f1e35;
+      border-bottom: 1px solid var(--border-hi);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 20px;
+      font-size: 11px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+    #status-bar .status-item span { color: var(--text); }
+
+    /* Canvas fills remaining space (minus status bar, minus bottom panel) */
+    #canvas {
+      flex: 1;
+      display: block;
+      cursor: pointer;
+    }
+
+    /* Action buttons row above bottom panel */
+    #action-bar {
+      height: 44px;
+      background: #0f1e35;
+      border-top: 1px solid var(--border-hi);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    #action-bar.hidden { display: none; }
+    .action-btn {
+      padding: 6px 16px;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .action-btn:disabled { opacity: 0.4; cursor: default; }
+    .action-btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .action-btn.primary:hover { background: var(--accent-dim); }
+
+    /* Players online */
+    #players-online {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border-hi);
+    }
+    #players-online summary {
+      padding: 8px 14px;
+      font-size: 11px;
+      color: var(--text-dim);
+      cursor: pointer;
+      background: #0f1e35;
+      list-style: none;
+      user-select: none;
+    }
+    #players-online summary::-webkit-details-marker { display: none; }
+    #players-online-list {
+      max-height: 120px;
+      overflow-y: auto;
+      background: var(--bg-panel);
+    }
+
+    /* Chat panel */
+    #chat-panel {
+      position: fixed;
+      top: 36px; right: 0;
+      width: 220px;
+      height: calc(100vh - 36px - 44px - 36px);
+      background: rgba(15,30,53,0.95);
+      border-left: 1px solid var(--border-hi);
+      display: flex;
+      flex-direction: column;
+      z-index: 50;
+    }
+    #chat-panel.hidden { display: none; }
+    #chat-toggle {
+      position: fixed;
+      top: 40px; right: 0;
+      padding: 4px 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-right: none;
+      font-size: 10px;
+      color: var(--text-dim);
+      cursor: pointer;
+      z-index: 51;
+      writing-mode: vertical-rl;
+    }
+    #chat-header {
+      padding: 8px 12px;
+      font-size: 10px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .chat-msg { word-break: break-word; line-height: 1.4; }
+    .chat-msg .chat-from { color: var(--accent); }
+    .chat-msg.system { color: var(--text-dim); font-style: italic; }
+    #chat-input-row {
+      display: flex;
+      border-top: 1px solid var(--border);
+    }
+    #chat-input {
+      flex: 1;
+      padding: 8px;
+      background: var(--bg-deep);
+      border: none;
+      color: var(--text);
+      font-family: monospace;
+      font-size: 12px;
+      outline: none;
+    }
+    #chat-send {
+      padding: 8px 10px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
+    /* ── RESULT OVERLAY ── */
+    #result-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 250;
+      gap: 20px;
+    }
+    #result-overlay.hidden { display: none; }
+    #result-title {
+      font-size: 64px;
+      letter-spacing: 8px;
+      font-weight: bold;
+    }
+    #result-title.win { color: var(--green); }
+    #result-title.lose { color: var(--accent); }
+    #result-title.push { color: var(--text-dim); }
+    #result-reason { font-size: 14px; color: var(--text-dim); }
+    #result-score { font-size: 18px; color: var(--text); }
+    #result-actions { display: flex; gap: 12px; margin-top: 8px; }
+    #result-countdown { font-size: 11px; color: var(--text-dim); }
+  </style>
+</head>
+<body>
+
+<!-- ── Username Modal ── -->
+<div id="username-modal" class="overlay">
+  <div class="modal">
+    <h1>CARD ARENA</h1>
+    <div class="subtitle">Multiplayer card games — Durak &amp; Blackjack</div>
+    <input type="text" id="username-input" placeholder="enter your name" maxlength="32" autocomplete="off">
+    <div class="error-msg" id="username-error"></div>
+    <button class="btn" id="username-submit">JOIN →</button>
+  </div>
+</div>
+
+<!-- ── Incoming Invite Banner ── -->
+<div id="invite-banner" class="hidden">
+  <span id="invite-text">Alex wants to play Durak</span>
+  <button class="btn-accept" id="invite-accept">Accept</button>
+  <button class="btn-decline" id="invite-decline">Decline</button>
+</div>
+
+<!-- ── Waiting Overlay ── -->
+<div id="waiting-overlay" class="hidden">
+  <div class="spinner"></div>
+  <span id="waiting-text">Waiting for opponent...</span>
+  <button class="btn btn-secondary" id="waiting-cancel" style="width:auto; padding: 6px 20px;">Cancel</button>
+</div>
+
+<!-- ── Game Picker ── -->
+<div id="picker-screen" class="hidden">
+  <div class="picker-header">CARD ARENA</div>
+  <div class="picker-greeting" id="picker-greeting">Hello, Player</div>
+  <div class="picker-sub">Choose a game and an opponent</div>
+
+  <div class="game-cards">
+    <div class="game-card selected" id="pick-durak" data-game="Durak">
+      <div class="game-card-icon">🃏</div>
+      <div class="game-card-name">DURAK</div>
+      <div class="game-card-desc">Russian Fool — avoid being last with cards</div>
+    </div>
+    <div class="game-card" id="pick-blackjack" data-game="Blackjack">
+      <div class="game-card-icon">🂡</div>
+      <div class="game-card-name">BLACKJACK</div>
+      <div class="game-card-desc">Beat the dealer — get to 21 without busting</div>
+    </div>
+  </div>
+
+  <div class="section-label">Choose Opponent</div>
+  <div id="player-list">
+    <div id="picker-empty" class="hidden">No other players online — only bot available</div>
+  </div>
+</div>
+
+<!-- ── Game Screen ── -->
+<div id="game-screen" class="hidden">
+  <!-- Status bar (DOM — not canvas) -->
+  <div id="status-bar">
+    <div class="status-item">Opponent: <span id="sb-opponent">—</span></div>
+    <div class="status-item">Trump: <span id="sb-trump">—</span></div>
+    <div class="status-item">Deck: <span id="sb-deck">—</span></div>
+    <div class="status-item">Turn: <span id="sb-turn">—</span></div>
+  </div>
+
+  <!-- Canvas for card table -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Action buttons -->
+  <div id="action-bar">
+    <button class="action-btn primary hidden" id="btn-attack">Attack</button>
+    <button class="action-btn hidden" id="btn-defend">Defend</button>
+    <button class="action-btn hidden" id="btn-take">Take Cards</button>
+    <button class="action-btn hidden" id="btn-end-attack">End Attack</button>
+    <button class="action-btn primary hidden" id="btn-hit">Hit</button>
+    <button class="action-btn hidden" id="btn-stand">Stand</button>
+  </div>
+
+  <!-- Players online dropdown -->
+  <details id="players-online">
+    <summary>Players Online (<span id="players-count">0</span>)</summary>
+    <div id="players-online-list"></div>
+  </details>
+
+  <!-- Chat panel -->
+  <div id="chat-panel">
+    <div id="chat-header">Chat</div>
+    <div id="chat-messages"></div>
+    <div id="chat-input-row">
+      <input type="text" id="chat-input" placeholder="message..." maxlength="200">
+      <button id="chat-send">→</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Result Overlay ── -->
+<div id="result-overlay" class="hidden">
+  <div id="result-title">YOU WIN</div>
+  <div id="result-reason"></div>
+  <div id="result-score"></div>
+  <div id="result-actions">
+    <button class="btn" id="result-play-again" style="width: auto; padding: 10px 24px;">Play Again</button>
+    <button class="btn btn-secondary" id="result-lobby" style="width: auto; padding: 10px 24px;">Return to Lobby</button>
+  </div>
+  <div id="result-countdown"></div>
+</div>
+
+<script type="module">
+  import init from '/pkg/client.js';
+  await init();
+</script>
+</body>
+</html>
