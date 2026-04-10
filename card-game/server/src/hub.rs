@@ -291,16 +291,20 @@ async fn handle_decline_invite(
         None => return,
     };
 
-    // Reset inviter status
-    if let Some(p) = s.players.get_mut(&inviter_id) {
-        p.status = PlayerStatus::Lobby;
-    }
-
     let decliner_name = s.players.get(&decliner_id)
         .map(|p| p.username.clone())
         .unwrap_or_default();
 
+    // Send InviteDeclined BEFORE resetting inviter status and broadcasting lobby update.
+    // This guarantees the targeted message is queued in the inviter's channel first,
+    // so InviteDeclined always arrives before the subsequent LobbyUpdate.
     send_to(&s, inviter_id, &ServerMessage::InviteDeclined { by: decliner_name });
+
+    // Now reset inviter status and broadcast so the lobby list reflects them as available.
+    if let Some(p) = s.players.get_mut(&inviter_id) {
+        p.status = PlayerStatus::Lobby;
+    }
+    broadcast_lobby_update(&s);
 }
 
 async fn handle_play_bot(
