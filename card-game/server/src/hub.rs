@@ -669,6 +669,8 @@ fn start_game(
             let g = DurakGame::new();
             let h0 = g.hands[0].clone();
             let h1 = g.hands[1].clone();
+            let h0_len = h0.len() as u8;
+            let h1_len = h1.len() as u8;
             let trump = Some(g.trump_card);
             let remaining = g.deck.remaining() as u8;
             let p0_attacks = g.attacker == 0;
@@ -695,10 +697,13 @@ fn start_game(
                     game: game_type.clone(),
                     your_hand: h0,
                     opponent_name: if p1_bot { "Bot".into() } else { p1_name.clone() },
+                    opponent_id: if p1_bot { None } else { Some(p1_id) },
                     trump,
                     deck_remaining: remaining,
                     you_attack_first: p0_attacks,
                 });
+                // Tell p0 how many cards their opponent starts with
+                send_to(s, p0_id, &ServerMessage::OpponentHandCount { count: h1_len });
             }
             if !p1_bot {
                 send_to(s, p1_id, &ServerMessage::GameStarted {
@@ -706,16 +711,22 @@ fn start_game(
                     game: game_type.clone(),
                     your_hand: h1,
                     opponent_name: p0_name,
+                    opponent_id: if p0_bot { None } else { Some(p0_id) },
                     trump,
                     deck_remaining: remaining,
                     you_attack_first: !p0_attacks,
                 });
+                // Tell p1 how many cards their opponent starts with
+                send_to(s, p1_id, &ServerMessage::OpponentHandCount { count: h0_len });
             }
         }
 
         GameType::Blackjack => {
             let g = BlackjackGame::new();
             let h0 = g.player_hand.clone();
+            // dealer_hand[0] = face-down, dealer_hand[1] = face-up
+            let dealer_face_down = g.dealer_hand[0];
+            let dealer_face_up   = g.dealer_hand[1];
             let remaining = g.deck.remaining() as u8;
 
             let p0_id = player_ids[0];
@@ -736,10 +747,14 @@ fn start_game(
                     game: game_type.clone(),
                     your_hand: h0,
                     opponent_name: "Dealer".into(),
+                    opponent_id: None,
                     trump: None,
                     deck_remaining: remaining,
                     you_attack_first: true,
                 });
+                // Send initial dealer cards: one hidden, one visible
+                send_to(s, p0_id, &ServerMessage::DealerCard { card: dealer_face_down, hidden: true });
+                send_to(s, p0_id, &ServerMessage::DealerCard { card: dealer_face_up,   hidden: false });
             }
         }
 
@@ -895,6 +910,10 @@ async fn handle_durak_move(
             _ => return,
         };
 
+        // Capture hand sizes before any mutation so we can compute new cards later
+        let h0_before = game.hands[0].len();
+        let h1_before = game.hands[1].len();
+
         let result = match current_action.clone() {
             GameAction::DurakAttack { card } => game.attack(current_player_idx, card),
             GameAction::DurakDefend { attack_card, defend_card } => {
@@ -903,7 +922,40 @@ async fn handle_durak_move(
             GameAction::DurakTakeCards => {
                 match game.take_cards(current_player_idx) {
                     Ok(cards) => {
+                        // Capture updated state while game is still borrowed
+                        let p0_attacks    = game.attacker == 0;
+                        let deck_rem      = game.deck.remaining() as u8;
+                        // new_pX = cards added to each hand (taken-table + deck-refill for
+                        // defender; deck-refill only for attacker)
+                        let new_p0: Vec<_> = game.hands[0][h0_before..].to_vec();
+                        let new_p1: Vec<_> = game.hands[1][h1_before..].to_vec();
+                        let opp0_count    = game.hands[1].len() as u8;
+                        let opp1_count    = game.hands[0].len() as u8;
+                        let p0_id = room.players[0];
+                        let p1_id = room.players[1];
+                        // game & room borrows end here (NLL)
+
                         broadcast_room(s, room_id, &ServerMessage::CardsTaken { cards });
+
+                        // Send per-player TurnEnded so both sides get their new cards
+                        // and correct attack/defend button state
+                        if !is_bot[0] {
+                            send_to(s, p0_id, &ServerMessage::TurnEnded {
+                                you_attack: p0_attacks,
+                                your_new_cards: new_p0,
+                                deck_remaining: deck_rem,
+                            });
+                            send_to(s, p0_id, &ServerMessage::OpponentHandCount { count: opp0_count });
+                        }
+                        if !is_bot[1] {
+                            send_to(s, p1_id, &ServerMessage::TurnEnded {
+                                you_attack: !p0_attacks,
+                                your_new_cards: new_p1,
+                                deck_remaining: deck_rem,
+                            });
+                            send_to(s, p1_id, &ServerMessage::OpponentHandCount { count: opp1_count });
+                        }
+
                         check_durak_victory(s, room_id);
                         break;
                     }
@@ -922,21 +974,58 @@ async fn handle_durak_move(
                     _ => return,
                 };
 
-                let msg = match &current_action {
-                    GameAction::DurakAttack { card } => ServerMessage::CardAttacked { card: *card },
-                    GameAction::DurakDefend { attack_card, defend_card } => {
-                        ServerMessage::CardDefended { attack_card: *attack_card, defend_card: *defend_card }
+                // DurakEndAttack: send per-player TurnEnded with their actual new cards.
+                // Broadcasting a single message would give player 1 the wrong you_attack flag.
+                if matches!(&current_action, GameAction::DurakEndAttack) {
+                    let p0_attacks  = game.attacker == 0;
+                    let deck_rem    = game.deck.remaining() as u8;
+                    let new_p0: Vec<_> = game.hands[0][h0_before..].to_vec();
+                    let new_p1: Vec<_> = game.hands[1][h1_before..].to_vec();
+                    let opp0_count  = game.hands[1].len() as u8;
+                    let opp1_count  = game.hands[0].len() as u8;
+                    let p0_id = room.players[0];
+                    let p1_id = room.players[1];
+                    // borrows end; s can now be taken for send_to
+
+                    if !is_bot[0] {
+                        send_to(s, p0_id, &ServerMessage::TurnEnded {
+                            you_attack: p0_attacks,
+                            your_new_cards: new_p0,
+                            deck_remaining: deck_rem,
+                        });
+                        send_to(s, p0_id, &ServerMessage::OpponentHandCount { count: opp0_count });
                     }
-                    GameAction::DurakEndAttack => {
-                        ServerMessage::TurnEnded {
-                            you_attack: game.attacker == 0,
-                            your_new_cards: vec![],
-                            deck_remaining: game.deck.remaining() as u8,
+                    if !is_bot[1] {
+                        send_to(s, p1_id, &ServerMessage::TurnEnded {
+                            you_attack: !p0_attacks,
+                            your_new_cards: new_p1,
+                            deck_remaining: deck_rem,
+                        });
+                        send_to(s, p1_id, &ServerMessage::OpponentHandCount { count: opp1_count });
+                    }
+                } else {
+                    let msg = match &current_action {
+                        GameAction::DurakAttack { card } => ServerMessage::CardAttacked { card: *card },
+                        GameAction::DurakDefend { attack_card, defend_card } => {
+                            ServerMessage::CardDefended { attack_card: *attack_card, defend_card: *defend_card }
                         }
+                        _ => break,
+                    };
+                    // After attack/defend, update opponent hand count for both players
+                    let opp0_count = game.hands[1].len() as u8;
+                    let opp1_count = game.hands[0].len() as u8;
+                    let p0_id = room.players[0];
+                    let p1_id = room.players[1];
+
+                    broadcast_room(s, room_id, &msg);
+                    if !is_bot[0] {
+                        send_to(s, p0_id, &ServerMessage::OpponentHandCount { count: opp0_count });
                     }
-                    _ => break,
-                };
-                broadcast_room(s, room_id, &msg);
+                    if !is_bot[1] {
+                        send_to(s, p1_id, &ServerMessage::OpponentHandCount { count: opp1_count });
+                    }
+                }
+
                 check_durak_victory(s, room_id);
 
                 if !s.rooms.contains_key(&room_id) {

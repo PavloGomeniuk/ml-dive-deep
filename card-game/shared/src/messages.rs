@@ -112,6 +112,7 @@ pub enum ServerMessage {
         game: GameType,
         your_hand: Vec<Card>,
         opponent_name: String,
+        opponent_id: Option<Uuid>,   // Some for PvP, None vs bot
         trump: Option<Card>,
         deck_remaining: u8,
         you_attack_first: bool,
