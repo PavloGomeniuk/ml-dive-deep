@@ -408,6 +408,35 @@
     #result-score { font-size: 18px; color: var(--text); }
     #result-actions { display: flex; gap: 12px; margin-top: 8px; }
     #result-countdown { font-size: 11px; color: var(--text-dim); }
+
+    /* ── KEYBOARD SHORTCUT HINTS ── */
+    kbd {
+      font-size: 8px;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      padding: 1px 3px;
+      border-radius: 2px;
+      margin-left: 3px;
+      vertical-align: middle;
+    }
+
+    /* ── VOICE CHAT ── */
+    #voice-btn {
+      padding: 6px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #voice-btn.active { border-color: var(--green); color: var(--green); }
+    #voice-btn.muted  { border-color: var(--accent); color: var(--accent); }
+    #voice-status {
+      font-size: 10px;
+      color: var(--text-dim);
+      padding: 0 6px;
+    }
   </style>
 </head>
 <body>
@@ -416,7 +445,7 @@
 <div id="username-modal" class="overlay">
   <div class="modal">
     <h1>CARD ARENA</h1>
-    <div class="subtitle">Multiplayer card games — Durak &amp; Blackjack</div>
+    <div class="subtitle">Multiplayer card games — Durak, Blackjack &amp; Poker</div>
     <input type="text" id="username-input" placeholder="enter your name" maxlength="32" autocomplete="off">
     <div class="error-msg" id="username-error"></div>
     <button class="btn" id="username-submit">JOIN →</button>
@@ -454,6 +483,11 @@
       <div class="game-card-name">BLACKJACK</div>
       <div class="game-card-desc">Beat the dealer — get to 21 without busting</div>
     </div>
+    <div class="game-card" id="pick-poker" data-game="TexasPoker">
+      <div class="game-card-icon">♠️</div>
+      <div class="game-card-name">TEXAS HOLD'EM</div>
+      <div class="game-card-desc">4-player poker — blinds 10/20, 1000 chips</div>
+    </div>
   </div>
 
   <div class="section-label">Choose Opponent</div>
@@ -470,6 +504,10 @@
     <div class="status-item">Trump: <span id="sb-trump">—</span></div>
     <div class="status-item">Deck: <span id="sb-deck">—</span></div>
     <div class="status-item">Turn: <span id="sb-turn">—</span></div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button id="voice-btn" title="Toggle voice chat">🎤 Voice</button>
+      <span id="voice-status"></span>
+    </div>
   </div>
 
   <!-- Canvas for card table -->
@@ -483,6 +521,13 @@
     <button class="action-btn hidden" id="btn-end-attack">End Attack</button>
     <button class="action-btn primary hidden" id="btn-hit">Hit</button>
     <button class="action-btn hidden" id="btn-stand">Stand</button>
+    <!-- Poker buttons (F/C/R keyboard shortcuts) -->
+    <button class="action-btn hidden" id="btn-fold" title="Fold [F]">Fold <kbd>F</kbd></button>
+    <button class="action-btn hidden" id="btn-check" title="Check [C]">Check <kbd>C</kbd></button>
+    <button class="action-btn hidden" id="btn-call" title="Call [C]">Call <kbd>C</kbd></button>
+    <button class="action-btn primary hidden" id="btn-raise" title="Raise [R]">Raise <kbd>R</kbd></button>
+    <!-- Forfeit button (all games) -->
+    <button class="action-btn hidden" id="forfeit-btn" style="margin-left:auto;background:#2a0a0a;border-color:#5a1a1a;color:#e94560" title="Forfeit current game">Forfeit</button>
   </div>
 
   <!-- Players online dropdown -->
@@ -513,6 +558,143 @@
   </div>
   <div id="result-countdown"></div>
 </div>
+
+<script>
+// ── WebRTC Voice Chat ─────────────────────────────────────────────────────────
+let localStream = null;
+let peers = {};  // peerId -> RTCPeerConnection
+let voiceActive = false;
+let voiceMuted = false;
+let voiceRoomPeers = [];  // peer UUIDs in current room
+
+const ICE_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+async function startVoice() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    voiceActive = true;
+    voiceMuted = false;
+    updateVoiceBtn();
+    setVoiceStatus('Voice on');
+  } catch (e) {
+    setVoiceStatus('Mic denied');
+    console.warn('Voice chat: mic access denied', e);
+  }
+}
+
+function stopVoice() {
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  Object.values(peers).forEach(pc => pc.close());
+  peers = {};
+  voiceActive = false;
+  updateVoiceBtn();
+  setVoiceStatus('');
+}
+
+function toggleMute() {
+  if (!localStream) return;
+  voiceMuted = !voiceMuted;
+  localStream.getAudioTracks().forEach(t => { t.enabled = !voiceMuted; });
+  updateVoiceBtn();
+  setVoiceStatus(voiceMuted ? 'Muted' : 'Voice on');
+}
+
+function updateVoiceBtn() {
+  const btn = document.getElementById('voice-btn');
+  if (!btn) return;
+  btn.className = voiceActive ? (voiceMuted ? 'muted' : 'active') : '';
+  btn.textContent = voiceActive ? (voiceMuted ? '🔇 Muted' : '🎤 On') : '🎤 Voice';
+}
+
+function setVoiceStatus(msg) {
+  const el = document.getElementById('voice-status');
+  if (el) el.textContent = msg;
+}
+
+document.getElementById('voice-btn').addEventListener('click', () => {
+  if (!voiceActive) {
+    startVoice();
+  } else {
+    toggleMute();
+  }
+});
+
+// Relay incoming voice signals from the WASM layer via postMessage
+window.addEventListener('message', async (ev) => {
+  const d = ev.data;
+  if (!d || d.type !== 'voiceSignal') return;
+  await handleVoiceSignal(d.from, d.signalType, JSON.parse(d.payload));
+});
+
+// Send a signal through the game WebSocket (WASM exposes sendVoiceSignal)
+function sendVoiceSignal(toId, signalType, payload) {
+  if (window.cardArenaWs && window.cardArenaWs.readyState === 1) {
+    window.cardArenaWs.send(JSON.stringify({
+      type: 'VoiceSignal',
+      to: toId,
+      signal_type: signalType,
+      payload: JSON.stringify(payload)
+    }));
+  }
+}
+
+async function handleVoiceSignal(fromId, signalType, payload) {
+  if (!voiceActive) return;
+
+  if (!peers[fromId]) {
+    peers[fromId] = createPeerConnection(fromId);
+  }
+  const pc = peers[fromId];
+
+  try {
+    if (signalType === 'offer') {
+      await pc.setRemoteDescription(payload);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendVoiceSignal(fromId, 'answer', answer);
+    } else if (signalType === 'answer') {
+      await pc.setRemoteDescription(payload);
+    } else if (signalType === 'ice') {
+      await pc.addIceCandidate(payload);
+    }
+  } catch (e) {
+    console.warn('WebRTC error handling signal', signalType, e);
+    setVoiceStatus('ICE failure — voice unavailable');
+  }
+}
+
+function createPeerConnection(peerId) {
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+
+  if (localStream) {
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  }
+
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate) {
+      sendVoiceSignal(peerId, 'ice', ev.candidate);
+    }
+  };
+
+  pc.ontrack = (ev) => {
+    const audio = new Audio();
+    audio.srcObject = ev.streams[0];
+    audio.autoplay = true;
+    document.body.appendChild(audio);
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') {
+      setVoiceStatus('ICE failure — voice unavailable');
+    }
+  };
+
+  return pc;
+}
+</script>
 
 <script type="module">
   import init from '/pkg/client.js';

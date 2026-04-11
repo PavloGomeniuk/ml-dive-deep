@@ -3,6 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use shared::messages::*;
 use shared::durak::DurakGame;
 use shared::blackjack::BlackjackGame;
+use shared::poker::{TexasPokerGame, PokerAction, PokerError};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -28,14 +29,24 @@ pub struct PlayerInfo {
 pub enum GameInstance {
     Durak(DurakGame),
     Blackjack(BlackjackGame),
+    TexasPoker(TexasPokerGame),
 }
 
 pub struct GameRoom {
     pub id: Uuid,
     pub game_type: GameType,
-    pub players: [Uuid; 2],  // [player_index_0, player_index_1]
-    pub is_bot: [bool; 2],   // true if that slot is a bot
+    pub players: Vec<Uuid>,  // all player IDs
+    pub is_bot: Vec<bool>,   // true if that slot is a bot
     pub game: GameInstance,
+}
+
+/// Multi-player invite state: tracks who has accepted, who still needs to respond.
+pub struct PendingRoom {
+    pub initiator_id: Uuid,
+    pub game_type: GameType,
+    pub accepted: Vec<(Uuid, bool)>,   // (id, is_bot) — committed players
+    pub pending: Vec<Uuid>,            // still waiting to accept/decline
+    pub capacity: usize,
 }
 
 pub struct AppState {
@@ -43,8 +54,8 @@ pub struct AppState {
     pub rooms: HashMap<Uuid, GameRoom>,
     pub lobby: HashSet<Uuid>,
     pub usernames: HashSet<String>,
-    // pending invites: room_id → (inviter_id, invitee_id, game_type)
-    pub pending_invites: HashMap<Uuid, (Uuid, Uuid, GameType)>,
+    // room_id → pending room state
+    pub pending_rooms: HashMap<Uuid, PendingRoom>,
 }
 
 impl AppState {
@@ -54,7 +65,7 @@ impl AppState {
             rooms: HashMap::new(),
             lobby: HashSet::new(),
             usernames: HashSet::new(),
-            pending_invites: HashMap::new(),
+            pending_rooms: HashMap::new(),
         }
     }
 }
@@ -119,6 +130,9 @@ async fn handle_message(
         ClientMessage::InvitePlayer { target_id, game } => {
             handle_invite(player_id, target_id, game, state).await;
         }
+        ClientMessage::InviteToRoom { room_id, target_id } => {
+            handle_invite_to_room(player_id, room_id, target_id, state).await;
+        }
         ClientMessage::AcceptInvite { room_id } => {
             handle_accept_invite(player_id, room_id, state).await;
         }
@@ -130,6 +144,12 @@ async fn handle_message(
         }
         ClientMessage::GameMove { room_id, action } => {
             handle_game_move(player_id, room_id, action, state).await;
+        }
+        ClientMessage::ForfeitGame { room_id } => {
+            handle_forfeit_game(player_id, room_id, state).await;
+        }
+        ClientMessage::VoiceSignal { to, signal_type, payload } => {
+            handle_voice_signal(player_id, to, signal_type, payload, state).await;
         }
         ClientMessage::ChatMessage { text } => {
             if text.trim().is_empty() {
@@ -148,7 +168,6 @@ async fn handle_join(
     tx: mpsc::Sender<String>,
     state: &crate::AppStateHandle,
 ) {
-    // Validate username
     let username = username.trim().to_string();
     if username.is_empty() {
         let _ = tx.send(error_json("Username cannot be empty")).await;
@@ -178,11 +197,9 @@ async fn handle_join(
     );
     s.lobby.insert(player_id);
 
-    // Send welcome
     let welcome = ServerMessage::Welcome { player_id };
     let _ = tx.send(to_json(&welcome)).await;
 
-    // Broadcast lobby update to everyone
     broadcast_lobby_update(&s);
 }
 
@@ -195,20 +212,18 @@ async fn handle_rejoin(
 ) {
     let mut s = state.write().await;
 
-    // Check if the old session and room still exist
     if !s.players.contains_key(&stored_id) || !s.rooms.contains_key(&room_id) {
-        // Session expired — treat as new connection, send error so client shows username modal
         let _ = tx.send(error_json("Session expired — please rejoin")).await;
         return;
     }
 
-    // Swap the sender for the existing player entry
     if let Some(player) = s.players.get_mut(&stored_id) {
         player.tx = tx.clone();
     }
 
     let welcome = ServerMessage::Welcome { player_id: stored_id };
     let _ = tx.send(to_json(&welcome)).await;
+    let _ = new_conn_id; // new socket ID not used further
 }
 
 async fn handle_invite(
@@ -224,7 +239,6 @@ async fn handle_invite(
         None => return,
     };
 
-    // Check target exists and is available
     let target = match s.players.get(&target_id) {
         Some(p) => p,
         None => {
@@ -238,12 +252,76 @@ async fn handle_invite(
     }
 
     let room_id = Uuid::new_v4();
-    s.pending_invites.insert(room_id, (inviter_id, target_id, game.clone()));
 
-    // Mark inviter as invite-pending
+    // Determine capacity: poker = 4, others = 2
+    let capacity = if matches!(game, GameType::TexasPoker) { 4 } else { 2 };
+
+    s.pending_rooms.insert(room_id, PendingRoom {
+        initiator_id: inviter_id,
+        game_type: game.clone(),
+        accepted: vec![(inviter_id, false)],
+        pending: vec![target_id],
+        capacity,
+    });
+
     if let Some(p) = s.players.get_mut(&inviter_id) {
         p.status = PlayerStatus::InvitePending;
     }
+
+    send_to(
+        &s,
+        target_id,
+        &ServerMessage::IncomingInvite {
+            from: inviter_name,
+            from_id: inviter_id,
+            room_id,
+            game,
+        },
+    );
+}
+
+async fn handle_invite_to_room(
+    inviter_id: Uuid,
+    room_id: Uuid,
+    target_id: Uuid,
+    state: &crate::AppStateHandle,
+) {
+    let mut s = state.write().await;
+
+    // Validate pending room and membership
+    let (is_member, already_invited) = match s.pending_rooms.get(&room_id) {
+        Some(pr) => (
+            pr.accepted.iter().any(|(id, _)| *id == inviter_id),
+            pr.pending.contains(&target_id) || pr.accepted.iter().any(|(id, _)| *id == target_id),
+        ),
+        None => {
+            send_to(&s, inviter_id, &ServerMessage::Error { msg: "Room not found or already started".into() });
+            return;
+        }
+    };
+
+    if !is_member {
+        send_to(&s, inviter_id, &ServerMessage::Error { msg: "You are not in this room".into() });
+        return;
+    }
+    if already_invited {
+        send_to(&s, inviter_id, &ServerMessage::Error { msg: "Player already invited".into() });
+        return;
+    }
+
+    // Check target is available
+    let target_available = s.players.get(&target_id)
+        .map(|p| p.status == PlayerStatus::Lobby)
+        .unwrap_or(false);
+    if !target_available {
+        send_to(&s, inviter_id, &ServerMessage::Error { msg: "Player is busy".into() });
+        return;
+    }
+
+    let inviter_name = s.players.get(&inviter_id).map(|p| p.username.clone()).unwrap_or_default();
+    let game = s.pending_rooms.get(&room_id).map(|pr| pr.game_type.clone()).unwrap();
+
+    s.pending_rooms.get_mut(&room_id).unwrap().pending.push(target_id);
 
     send_to(
         &s,
@@ -264,19 +342,30 @@ async fn handle_accept_invite(
 ) {
     let mut s = state.write().await;
 
-    let (inviter_id, invitee_id, game_type) = match s.pending_invites.remove(&room_id) {
-        Some(inv) => inv,
+    let pr = match s.pending_rooms.get_mut(&room_id) {
+        Some(pr) => pr,
         None => {
             send_to(&s, accepter_id, &ServerMessage::Error { msg: "Invite expired".into() });
             return;
         }
     };
 
-    if accepter_id != invitee_id {
-        return; // wrong player
+    // Remove from pending
+    if let Some(pos) = pr.pending.iter().position(|&id| id == accepter_id) {
+        pr.pending.remove(pos);
+    } else {
+        return; // not in pending list
     }
 
-    start_game(&mut s, room_id, game_type, inviter_id, invitee_id, false, false);
+    pr.accepted.push((accepter_id, false));
+
+    // Check if we have enough players to start
+    if pr.accepted.len() >= pr.capacity || pr.pending.is_empty() {
+        let pr = s.pending_rooms.remove(&room_id).unwrap();
+        let players: Vec<(Uuid, bool)> = pr.accepted;
+        start_game(&mut s, room_id, pr.game_type, players);
+    }
+    // else: still waiting for more accepts
 }
 
 async fn handle_decline_invite(
@@ -286,8 +375,8 @@ async fn handle_decline_invite(
 ) {
     let mut s = state.write().await;
 
-    let (inviter_id, _, _) = match s.pending_invites.remove(&room_id) {
-        Some(inv) => inv,
+    let pr = match s.pending_rooms.remove(&room_id) {
+        Some(pr) => pr,
         None => return,
     };
 
@@ -295,15 +384,21 @@ async fn handle_decline_invite(
         .map(|p| p.username.clone())
         .unwrap_or_default();
 
-    // Send InviteDeclined BEFORE resetting inviter status and broadcasting lobby update.
-    // This guarantees the targeted message is queued in the inviter's channel first,
-    // so InviteDeclined always arrives before the subsequent LobbyUpdate.
-    send_to(&s, inviter_id, &ServerMessage::InviteDeclined { by: decliner_name });
+    let initiator_id = pr.initiator_id;
 
-    // Now reset inviter status and broadcast so the lobby list reflects them as available.
-    if let Some(p) = s.players.get_mut(&inviter_id) {
+    // Notify all accepted players that invite was declined
+    for (pid, _) in &pr.accepted {
+        send_to(&s, *pid, &ServerMessage::InviteDeclined { by: decliner_name.clone() });
+        if let Some(p) = s.players.get_mut(pid) {
+            p.status = PlayerStatus::Lobby;
+        }
+    }
+
+    // Reset initiator status
+    if let Some(p) = s.players.get_mut(&initiator_id) {
         p.status = PlayerStatus::Lobby;
     }
+
     broadcast_lobby_update(&s);
 }
 
@@ -313,43 +408,240 @@ async fn handle_play_bot(
     state: &crate::AppStateHandle,
 ) {
     let room_id = Uuid::new_v4();
-    let bot_id = Uuid::new_v4();
+    let (bot_ids, players): (Vec<Uuid>, Vec<(Uuid, bool)>) = match &game {
+        GameType::TexasPoker => {
+            // 1 human + 3 bots
+            let b1 = Uuid::new_v4();
+            let b2 = Uuid::new_v4();
+            let b3 = Uuid::new_v4();
+            (
+                vec![b1, b2, b3],
+                vec![(player_id, false), (b1, true), (b2, true), (b3, true)],
+            )
+        }
+        _ => {
+            let bot_id = Uuid::new_v4();
+            (vec![bot_id], vec![(player_id, false), (bot_id, true)])
+        }
+    };
+
     {
         let mut s = state.write().await;
-        start_game(&mut s, room_id, game, player_id, bot_id, false, true);
+        // Register bot placeholder entries so send_to doesn't fail lookups
+        for bot_id in &bot_ids {
+            let (bot_tx, _bot_rx) = mpsc::channel::<String>(1);
+            s.players.insert(*bot_id, PlayerInfo {
+                id: *bot_id,
+                username: "Bot".into(),
+                status: PlayerStatus::Lobby,
+                tx: bot_tx,
+            });
+        }
+        start_game(&mut s, room_id, game, players);
     }
-    // If the bot is the attacker (player index 1 is bot, so bot_idx=1 but attacker could be 0 or 1)
-    // Check and fire bot's first move after releasing the write lock.
+
     trigger_bot_move_if_needed(room_id, state).await;
 }
 
-/// After game starts or after a human move, trigger the bot's next move if it's the bot's turn.
-async fn trigger_bot_move_if_needed(room_id: Uuid, state: &crate::AppStateHandle) {
-    let bot_action = {
-        let s = state.read().await;
+async fn handle_forfeit_game(
+    player_id: Uuid,
+    room_id: Uuid,
+    state: &crate::AppStateHandle,
+) {
+    let need_bot_trigger = {
+        let mut s = state.write().await;
+
         let room = match s.rooms.get(&room_id) {
             Some(r) => r,
             None => return,
         };
-        let bot_idx = if room.is_bot[1] { Some(1usize) } else if room.is_bot[0] { Some(0) } else { return };
-        let bidx = bot_idx.unwrap();
-        if let GameInstance::Durak(g) = &room.game {
-            let bot_should_move =
-                (g.attacker == bidx && matches!(g.state, shared::durak::DurakState::PlayerAttacks))
-                || (g.defender() == bidx && matches!(g.state, shared::durak::DurakState::PlayerDefends));
-            if bot_should_move {
-                bot::durak_move(g, bidx).map(|a| (a, bidx))
-            } else {
-                None
-            }
-        } else {
-            None
+
+        if !room.players.contains(&player_id) {
+            return;
         }
+
+        match &room.game {
+            GameInstance::Durak(_) | GameInstance::Blackjack(_) => {
+                let human_opponents: Vec<Uuid> = room.players.iter().enumerate()
+                    .filter(|(i, &pid)| pid != player_id && !room.is_bot[*i])
+                    .map(|(_, &pid)| pid)
+                    .collect();
+                let winner = human_opponents.first().copied();
+                let forfeiter_name = s.players.get(&player_id)
+                    .map(|p| p.username.clone())
+                    .unwrap_or_default();
+                end_game(&mut s, room_id, winner, format!("{} forfeited", forfeiter_name));
+                false
+            }
+            GameInstance::TexasPoker(_) => {
+                let player_idx = room.players.iter().position(|&id| id == player_id);
+                if let Some(idx) = player_idx {
+                    let room = s.rooms.get_mut(&room_id).unwrap();
+                    if let GameInstance::TexasPoker(g) = &mut room.game {
+                        g.forfeit_player(player_id);
+                        let active_count = g.players.iter().filter(|p| p.active).count();
+                        if active_count <= 1 {
+                            let awards = g.award_pot();
+                            let winner = awards.first().map(|(id, _)| *id);
+                            let pot_won = awards.first().map(|(_, chips)| *chips).unwrap_or(0);
+                            let community = g.community_cards.clone();
+                            let hands: Vec<(Uuid, Vec<shared::deck::Card>, shared::poker::HandRank)> =
+                                g.players.iter().filter(|p| !p.folded).map(|p| {
+                                    let (rank, best) = shared::poker::evaluate_hand(&p.hole_cards, &community);
+                                    (p.id, best, rank)
+                                }).collect();
+                            if let Some(w) = winner {
+                                let showdown_msg = ServerMessage::PokerShowdown { hands, winner_id: w, pot_won };
+                                broadcast_room(&s, room_id, &showdown_msg);
+                            }
+                            let forfeiter_name = s.players.get(&player_id)
+                                .map(|p| p.username.clone())
+                                .unwrap_or_default();
+                            end_game(&mut s, room_id, winner, format!("{} forfeited", forfeiter_name));
+                            false
+                        } else {
+                            // Fold this player; bots will need to continue playing
+                            let msg = ServerMessage::PokerPlayerFolded { player_id };
+                            broadcast_room(&s, room_id, &msg);
+                            send_poker_state_update(&mut s, room_id, idx);
+                            true // need bot trigger
+                        }
+                    } else { false }
+                } else { false }
+            }
+        }
+    }; // write lock released here
+
+    if need_bot_trigger {
+        trigger_bot_move_if_needed(room_id, state).await;
+    }
+}
+
+async fn handle_voice_signal(
+    from_id: Uuid,
+    to_id: Uuid,
+    signal_type: String,
+    payload: String,
+    state: &crate::AppStateHandle,
+) {
+    let s = state.read().await;
+
+    // Validate both players are in the same room
+    let from_room = match s.players.get(&from_id) {
+        Some(p) => match &p.status {
+            PlayerStatus::InGame(rid) => *rid,
+            _ => return,
+        },
+        None => return,
+    };
+    let to_room = match s.players.get(&to_id) {
+        Some(p) => match &p.status {
+            PlayerStatus::InGame(rid) => *rid,
+            _ => return,
+        },
+        None => return,
     };
 
-    if let Some((action, bot_idx)) = bot_action {
-        let mut s = state.write().await;
-        handle_durak_move(&mut s, room_id, bot_idx, action).await;
+    if from_room != to_room {
+        return; // security: same-room only
+    }
+
+    send_to(&s, to_id, &ServerMessage::VoiceSignalRelayed { from: from_id, signal_type, payload });
+}
+
+/// After game starts or after a human move, trigger the bot's next move if it's the bot's turn.
+async fn trigger_bot_move_if_needed(room_id: Uuid, state: &crate::AppStateHandle) {
+    loop {
+        let bot_action = {
+            let s = state.read().await;
+            let room = match s.rooms.get(&room_id) {
+                Some(r) => r,
+                None => return,
+            };
+
+            match &room.game {
+                GameInstance::Durak(g) => {
+                    // Find a bot whose turn it is
+                    let bot_idx = room.is_bot.iter().enumerate()
+                        .find(|(_, &is_bot)| is_bot)
+                        .map(|(i, _)| i);
+                    if let Some(bidx) = bot_idx {
+                        let bot_should_move =
+                            (g.attacker == bidx && matches!(g.state, shared::durak::DurakState::PlayerAttacks))
+                            || (g.defender() == bidx && matches!(g.state, shared::durak::DurakState::PlayerDefends));
+                        if bot_should_move {
+                            bot::durak_move(g, bidx).map(|a| (a, bidx, None::<Uuid>))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                GameInstance::TexasPoker(g) => {
+                    let action_player_id = g.action_player_id();
+                    if let Some(apid) = action_player_id {
+                        let pidx = room.players.iter().position(|&id| id == apid);
+                        if let Some(idx) = pidx {
+                            if room.is_bot[idx] {
+                                let action = bot::poker_move(g);
+                                Some((GameAction::PokerCall, 0, Some(apid))) // placeholder; replaced below
+                                    .map(|_| (GameAction::PokerCall, idx, Some(apid)))
+                                    .map(|(_, i, pid)| (poker_action_to_game_action(&action), i, pid))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        };
+
+        match bot_action {
+            Some((GameAction::DurakAttack { .. } | GameAction::DurakDefend { .. }
+                  | GameAction::DurakTakeCards | GameAction::DurakEndAttack, bot_idx, _)) => {
+                let mut s = state.write().await;
+                handle_durak_move(&mut s, room_id, bot_idx, bot_action.unwrap().0).await;
+                break;
+            }
+            Some((action, _, Some(bot_player_id))) => {
+                // Poker bot move
+                let mut s = state.write().await;
+                handle_poker_move(&mut s, room_id, bot_player_id, action).await;
+                // Check if next action is also a bot — loop again
+                let is_next_bot = {
+                    let room = s.rooms.get(&room_id);
+                    room.and_then(|r| {
+                        if let GameInstance::TexasPoker(g) = &r.game {
+                            g.action_player_id().and_then(|apid| {
+                                r.players.iter().position(|&id| id == apid).map(|i| r.is_bot[i])
+                            })
+                        } else {
+                            None
+                        }
+                    }).unwrap_or(false)
+                };
+                if !is_next_bot {
+                    break;
+                }
+                // else loop again for next bot
+            }
+            _ => break,
+        }
+    }
+}
+
+fn poker_action_to_game_action(action: &bot::PokerBotAction) -> GameAction {
+    match action {
+        bot::PokerBotAction::Fold => GameAction::PokerFold,
+        bot::PokerBotAction::Check => GameAction::PokerCheck,
+        bot::PokerBotAction::Call => GameAction::PokerCall,
+        bot::PokerBotAction::Raise(amount) => GameAction::PokerRaise { amount: *amount },
     }
 }
 
@@ -357,92 +649,179 @@ fn start_game(
     s: &mut AppState,
     room_id: Uuid,
     game_type: GameType,
-    player0_id: Uuid,
-    player1_id: Uuid,
-    player0_is_bot: bool,
-    player1_is_bot: bool,
+    players: Vec<(Uuid, bool)>, // (id, is_bot)
 ) {
-    // Remove both from lobby
-    s.lobby.remove(&player0_id);
-    s.lobby.remove(&player1_id);
+    let player_ids: Vec<Uuid> = players.iter().map(|(id, _)| *id).collect();
+    let is_bot_vec: Vec<bool> = players.iter().map(|(_, b)| *b).collect();
 
-    // Update statuses
-    for id in [player0_id, player1_id] {
-        if let Some(p) = s.players.get_mut(&id) {
+    // Remove human players from lobby and update status
+    for (pid, is_bot) in &players {
+        if !is_bot {
+            s.lobby.remove(pid);
+        }
+        if let Some(p) = s.players.get_mut(pid) {
             p.status = PlayerStatus::InGame(room_id);
         }
     }
 
-    let (game_instance, your_hand_0, your_hand_1, trump, deck_remaining, p0_attacks) =
-        match &game_type {
-            GameType::Durak => {
-                let g = DurakGame::new();
-                let h0 = g.hands[0].clone();
-                let h1 = g.hands[1].clone();
-                let trump = Some(g.trump_card);
-                let remaining = g.deck.remaining() as u8;
-                let p0_atk = g.attacker == 0;
-                (GameInstance::Durak(g), h0, h1, trump, remaining, p0_atk)
+    match &game_type {
+        GameType::Durak => {
+            let g = DurakGame::new();
+            let h0 = g.hands[0].clone();
+            let h1 = g.hands[1].clone();
+            let trump = Some(g.trump_card);
+            let remaining = g.deck.remaining() as u8;
+            let p0_attacks = g.attacker == 0;
+
+            let p0_id = player_ids[0];
+            let p1_id = player_ids[1];
+            let p0_bot = is_bot_vec[0];
+            let p1_bot = is_bot_vec[1];
+            let p0_name = s.players.get(&p0_id).map(|p| p.username.clone()).unwrap_or_default();
+            let p1_name = s.players.get(&p1_id).map(|p| p.username.clone()).unwrap_or_default();
+
+            let room = GameRoom {
+                id: room_id,
+                game_type: game_type.clone(),
+                players: player_ids,
+                is_bot: is_bot_vec,
+                game: GameInstance::Durak(g),
+            };
+            s.rooms.insert(room_id, room);
+
+            if !p0_bot {
+                send_to(s, p0_id, &ServerMessage::GameStarted {
+                    room_id,
+                    game: game_type.clone(),
+                    your_hand: h0,
+                    opponent_name: if p1_bot { "Bot".into() } else { p1_name.clone() },
+                    trump,
+                    deck_remaining: remaining,
+                    you_attack_first: p0_attacks,
+                });
             }
-            GameType::Blackjack => {
-                let g = BlackjackGame::new();
-                let h0 = g.player_hand.clone();
-                let h1 = vec![]; // bot/opponent hand not sent
-                let remaining = g.deck.remaining() as u8;
-                (GameInstance::Blackjack(g), h0, h1, None, remaining, true)
+            if !p1_bot {
+                send_to(s, p1_id, &ServerMessage::GameStarted {
+                    room_id,
+                    game: game_type.clone(),
+                    your_hand: h1,
+                    opponent_name: p0_name,
+                    trump,
+                    deck_remaining: remaining,
+                    you_attack_first: !p0_attacks,
+                });
             }
-        };
+        }
 
-    let room = GameRoom {
-        id: room_id,
-        game_type: game_type.clone(),
-        players: [player0_id, player1_id],
-        is_bot: [player0_is_bot, player1_is_bot],
-        game: game_instance,
-    };
-    s.rooms.insert(room_id, room);
+        GameType::Blackjack => {
+            let g = BlackjackGame::new();
+            let h0 = g.player_hand.clone();
+            let remaining = g.deck.remaining() as u8;
 
-    let p0_name = s.players.get(&player0_id).map(|p| p.username.clone()).unwrap_or_default();
-    let p1_name = s.players.get(&player1_id).map(|p| p.username.clone()).unwrap_or_default();
+            let p0_id = player_ids[0];
+            let p0_bot = is_bot_vec[0];
 
-    // Send GameStarted to player 0
-    if !player0_is_bot {
-        send_to(
-            s,
-            player0_id,
-            &ServerMessage::GameStarted {
-                room_id,
-                game: game_type.clone(),
-                your_hand: your_hand_0,
-                opponent_name: if player1_is_bot { "Bot".into() } else { p1_name.clone() },
-                trump,
-                deck_remaining,
-                you_attack_first: p0_attacks,
-            },
-        );
-    }
+            let room = GameRoom {
+                id: room_id,
+                game_type: game_type.clone(),
+                players: player_ids,
+                is_bot: is_bot_vec,
+                game: GameInstance::Blackjack(g),
+            };
+            s.rooms.insert(room_id, room);
 
-    // Send GameStarted to player 1
-    if !player1_is_bot {
-        send_to(
-            s,
-            player1_id,
-            &ServerMessage::GameStarted {
-                room_id,
-                game: game_type.clone(),
-                your_hand: your_hand_1,
-                opponent_name: p0_name,
-                trump,
-                deck_remaining,
-                you_attack_first: !p0_attacks,
-            },
-        );
+            if !p0_bot {
+                send_to(s, p0_id, &ServerMessage::GameStarted {
+                    room_id,
+                    game: game_type.clone(),
+                    your_hand: h0,
+                    opponent_name: "Dealer".into(),
+                    trump: None,
+                    deck_remaining: remaining,
+                    you_attack_first: true,
+                });
+            }
+        }
+
+        GameType::TexasPoker => {
+            let g = TexasPokerGame::new(player_ids.clone(), 1000);
+            let dealer_seat = g.dealer_seat;
+            let small_blind = g.small_blind;
+            let big_blind = g.big_blind;
+
+            // Collect seat info for all players
+            let seat_infos: Vec<PokerSeatInfo> = player_ids.iter().zip(is_bot_vec.iter()).map(|(pid, &is_bot)| {
+                let name = s.players.get(pid).map(|p| p.username.clone()).unwrap_or("Bot".into());
+                let chips = g.players.iter().find(|p| p.id == *pid).map(|p| p.chips).unwrap_or(1000);
+                PokerSeatInfo { id: *pid, name, chips, is_bot }
+            }).collect();
+
+            // Build initial player info
+            let players_info: Vec<PokerPlayerInfo> = g.players.iter().map(|p| PokerPlayerInfo {
+                id: p.id,
+                chips: p.chips,
+                bet: p.bet,
+                folded: p.folded,
+                active: p.active,
+                all_in: p.all_in,
+            }).collect();
+
+            let community_cards = g.community_cards.clone();
+            let pot = g.pot;
+            let current_bet = g.current_bet;
+            let action_player_id = g.action_player_id().unwrap_or(player_ids[0]);
+
+            let room = GameRoom {
+                id: room_id,
+                game_type: game_type.clone(),
+                players: player_ids.clone(),
+                is_bot: is_bot_vec.clone(),
+                game: GameInstance::TexasPoker(g),
+            };
+            s.rooms.insert(room_id, room);
+
+            // Send PokerGameStarted to each human player with their hole cards
+            for (seat, (pid, &is_bot)) in player_ids.iter().zip(is_bot_vec.iter()).enumerate() {
+                if is_bot {
+                    continue;
+                }
+                let hole_cards = {
+                    if let Some(room) = s.rooms.get(&room_id) {
+                        if let GameInstance::TexasPoker(g) = &room.game {
+                            g.players.iter().find(|p| p.id == *pid).map(|p| p.hole_cards)
+                        } else { None }
+                    } else { None }
+                };
+                if let Some(hole_cards) = hole_cards {
+                    let chips = players_info.iter().find(|p| p.id == *pid).map(|p| p.chips).unwrap_or(1000);
+                    let bet = players_info.iter().find(|p| p.id == *pid).map(|p| p.bet).unwrap_or(0);
+                    send_to(s, *pid, &ServerMessage::PokerGameStarted {
+                        room_id,
+                        your_hole_cards: hole_cards,
+                        your_seat: seat,
+                        players: seat_infos.clone(),
+                        dealer_seat,
+                        small_blind,
+                        big_blind,
+                    });
+                    // Send initial state update
+                    send_to(s, *pid, &ServerMessage::PokerStateUpdate {
+                        room_id,
+                        community_cards: community_cards.clone(),
+                        pot,
+                        current_bet,
+                        your_chips: chips,
+                        your_bet: bet,
+                        action_player_id,
+                        dealer_seat,
+                        players_info: players_info.clone(),
+                    });
+                }
+            }
+        }
     }
 
     broadcast_lobby_update(s);
-
-    // If player 0 is human and bot attacks first (player index 1 = bot, attacker idx 0 = player0)
-    // We handle bot-goes-first case after game start.
 }
 
 async fn handle_game_move(
@@ -451,35 +830,48 @@ async fn handle_game_move(
     action: GameAction,
     state: &crate::AppStateHandle,
 ) {
-    let mut s = state.write().await;
+    let is_poker_action = matches!(action,
+        GameAction::PokerFold | GameAction::PokerCheck | GameAction::PokerCall | GameAction::PokerRaise { .. }
+    );
 
-    let room = match s.rooms.get_mut(&room_id) {
-        Some(r) => r,
-        None => {
-            send_to(&s, player_id, &ServerMessage::Error { msg: "Room not found".into() });
-            return;
-        }
-    };
+    {
+        let mut s = state.write().await;
 
-    // Determine player's index in this room
-    let player_idx = match room.players.iter().position(|&id| id == player_id) {
-        Some(i) => i,
-        None => {
-            send_to(&s, player_id, &ServerMessage::Error { msg: "You are not in this game".into() });
-            return;
-        }
-    };
+        let room = match s.rooms.get(&room_id) {
+            Some(r) => r,
+            None => {
+                send_to(&s, player_id, &ServerMessage::Error { msg: "Room not found".into() });
+                return;
+            }
+        };
 
-    match &action {
-        GameAction::DurakAttack { .. }
-        | GameAction::DurakDefend { .. }
-        | GameAction::DurakTakeCards
-        | GameAction::DurakEndAttack => {
-            handle_durak_move(&mut s, room_id, player_idx, action).await;
+        let player_idx = match room.players.iter().position(|&id| id == player_id) {
+            Some(i) => i,
+            None => {
+                send_to(&s, player_id, &ServerMessage::Error { msg: "You are not in this game".into() });
+                return;
+            }
+        };
+
+        match &action {
+            GameAction::DurakAttack { .. }
+            | GameAction::DurakDefend { .. }
+            | GameAction::DurakTakeCards
+            | GameAction::DurakEndAttack => {
+                handle_durak_move(&mut s, room_id, player_idx, action).await;
+            }
+            GameAction::BlackjackHit | GameAction::BlackjackStand => {
+                handle_blackjack_move(&mut s, room_id, player_idx, action).await;
+            }
+            GameAction::PokerFold | GameAction::PokerCheck | GameAction::PokerCall | GameAction::PokerRaise { .. } => {
+                handle_poker_move(&mut s, room_id, player_id, action).await;
+            }
         }
-        GameAction::BlackjackHit | GameAction::BlackjackStand => {
-            handle_blackjack_move(&mut s, room_id, player_idx, action).await;
-        }
+    } // write lock released
+
+    // After a poker move, trigger any bot responses
+    if is_poker_action {
+        trigger_bot_move_if_needed(room_id, state).await;
     }
 }
 
@@ -492,13 +884,12 @@ async fn handle_durak_move(
     let mut current_action = initial_action;
     let mut current_player_idx = player_idx;
 
-    // Loop handles the human move then bot response(s) without async recursion
     loop {
         let room = match s.rooms.get_mut(&room_id) {
             Some(r) => r,
             None => return,
         };
-        let is_bot = room.is_bot;
+        let is_bot = room.is_bot.clone();
         let game = match &mut room.game {
             GameInstance::Durak(g) => g,
             _ => return,
@@ -525,7 +916,6 @@ async fn handle_durak_move(
 
         match result {
             Ok(()) => {
-                // Build broadcast message and send it
                 let room = s.rooms.get(&room_id).unwrap();
                 let game = match &room.game {
                     GameInstance::Durak(g) => g,
@@ -549,14 +939,15 @@ async fn handle_durak_move(
                 broadcast_room(s, room_id, &msg);
                 check_durak_victory(s, room_id);
 
-                // Check if game ended
                 if !s.rooms.contains_key(&room_id) {
                     break;
                 }
 
-                // Check if a bot needs to move
                 let room = s.rooms.get(&room_id).unwrap();
-                let bot_idx = if is_bot[1] { Some(1usize) } else if is_bot[0] { Some(0) } else { None };
+                let bot_idx = is_bot.iter().enumerate()
+                    .find(|(_, &b)| b)
+                    .map(|(i, _)| i);
+
                 if let Some(bidx) = bot_idx {
                     if let GameInstance::Durak(g) = &room.game {
                         let bot_should_move =
@@ -567,12 +958,12 @@ async fn handle_durak_move(
                             if let Some(ba) = bot::durak_move(g, bidx) {
                                 current_action = ba;
                                 current_player_idx = bidx;
-                                continue; // loop: apply bot move
+                                continue;
                             }
                         }
                     }
                 }
-                break; // no bot move needed
+                break;
             }
             Err(e) => {
                 let player_id = s.rooms.get(&room_id).unwrap().players[current_player_idx];
@@ -603,7 +994,6 @@ async fn handle_blackjack_move(
                     let score = shared::blackjack::hand_value(&game.player_hand);
                     send_to(s, player_id, &ServerMessage::PlayerCard { card });
                     if score > 21 {
-                        // Bust — game over
                         let dealer_score = shared::blackjack::hand_value(
                             &s.rooms.get(&room_id).unwrap().game.as_blackjack().unwrap().dealer_hand
                         );
@@ -655,6 +1045,149 @@ async fn handle_blackjack_move(
     }
 }
 
+async fn handle_poker_move(
+    s: &mut AppState,
+    room_id: Uuid,
+    player_id: Uuid,
+    action: GameAction,
+) {
+    let poker_action = match &action {
+        GameAction::PokerFold => PokerAction::Fold,
+        GameAction::PokerCheck => PokerAction::Check,
+        GameAction::PokerCall => PokerAction::Call,
+        GameAction::PokerRaise { amount } => PokerAction::Raise(*amount),
+        _ => return,
+    };
+
+    let result = {
+        let room = match s.rooms.get_mut(&room_id) {
+            Some(r) => r,
+            None => return,
+        };
+        match &mut room.game {
+            GameInstance::TexasPoker(g) => g.apply_action(player_id, poker_action),
+            _ => return,
+        }
+    };
+
+    match result {
+        Err(PokerError::NotYourTurn) => {
+            send_to(s, player_id, &ServerMessage::Error { msg: "Not your turn".into() });
+            return;
+        }
+        Err(e) => {
+            send_to(s, player_id, &ServerMessage::Error { msg: format!("{:?}", e) });
+            return;
+        }
+        Ok(()) => {}
+    }
+
+    // If fold, notify everyone
+    if matches!(action, GameAction::PokerFold) {
+        broadcast_room(s, room_id, &ServerMessage::PokerPlayerFolded { player_id });
+    }
+
+    // Check for showdown
+    let showdown_data = {
+        let room = s.rooms.get(&room_id);
+        room.and_then(|r| {
+            if let GameInstance::TexasPoker(g) = &r.game {
+                if matches!(g.round, shared::poker::BettingRound::Showdown) {
+                    Some(g.community_cards.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    };
+
+    if let Some(community) = showdown_data {
+        // Build showdown hands
+        let (hands, awards) = {
+            let room = s.rooms.get_mut(&room_id).unwrap();
+            if let GameInstance::TexasPoker(g) = &mut room.game {
+                let hands: Vec<(Uuid, Vec<shared::deck::Card>, shared::poker::HandRank)> =
+                    g.players.iter().filter(|p| !p.folded).map(|p| {
+                        let (rank, best) = shared::poker::evaluate_hand(&p.hole_cards, &community);
+                        (p.id, best, rank)
+                    }).collect();
+                let awards = g.award_pot();
+                (hands, awards)
+            } else {
+                return;
+            }
+        };
+
+        let winner_id = awards.first().map(|(id, _)| *id).unwrap_or(player_id);
+        let pot_won = awards.first().map(|(_, chips)| *chips).unwrap_or(0);
+
+        let showdown_msg = ServerMessage::PokerShowdown { hands, winner_id, pot_won };
+        broadcast_room(s, room_id, &showdown_msg);
+        end_game(s, room_id, Some(winner_id), format!("Pot of {} chips awarded", pot_won));
+        return;
+    }
+
+    // Send state update to all human players
+    let player_indices: Vec<usize> = {
+        let room = s.rooms.get(&room_id).unwrap();
+        (0..room.players.len()).collect()
+    };
+    for idx in player_indices {
+        send_poker_state_update(s, room_id, idx);
+    }
+}
+
+fn send_poker_state_update(s: &mut AppState, room_id: Uuid, _player_idx: usize) {
+    let room = match s.rooms.get(&room_id) {
+        Some(r) => r,
+        None => return,
+    };
+    let g = match &room.game {
+        GameInstance::TexasPoker(g) => g,
+        _ => return,
+    };
+
+    let community_cards = g.community_cards.clone();
+    let pot = g.pot;
+    let current_bet = g.current_bet;
+    let action_player_id = g.action_player_id().unwrap_or(room.players[0]);
+    let dealer_seat = g.dealer_seat;
+
+    let players_info: Vec<PokerPlayerInfo> = g.players.iter().map(|p| PokerPlayerInfo {
+        id: p.id,
+        chips: p.chips,
+        bet: p.bet,
+        folded: p.folded,
+        active: p.active,
+        all_in: p.all_in,
+    }).collect();
+
+    // Send personalized update to each human
+    let human_players: Vec<(Uuid, u32, u32)> = g.players.iter()
+        .filter_map(|p| {
+            let idx = room.players.iter().position(|&id| id == p.id)?;
+            if room.is_bot[idx] { return None; }
+            Some((p.id, p.chips, p.bet))
+        })
+        .collect();
+
+    for (pid, chips, bet) in human_players {
+        send_to(s, pid, &ServerMessage::PokerStateUpdate {
+            room_id,
+            community_cards: community_cards.clone(),
+            pot,
+            current_bet,
+            your_chips: chips,
+            your_bet: bet,
+            action_player_id,
+            dealer_seat,
+            players_info: players_info.clone(),
+        });
+    }
+}
+
 fn check_durak_victory(s: &mut AppState, room_id: Uuid) {
     let room = match s.rooms.get(&room_id) {
         Some(r) => r,
@@ -676,6 +1209,8 @@ fn end_game(s: &mut AppState, room_id: Uuid, winner: Option<Uuid>, reason: Strin
     };
     for (idx, &pid) in room.players.iter().enumerate() {
         if room.is_bot[idx] {
+            // Clean up bot player entry
+            s.players.remove(&pid);
             continue;
         }
         if let Some(p) = s.players.get_mut(&pid) {
@@ -696,10 +1231,10 @@ async fn handle_chat(player_id: Uuid, text: String, state: &crate::AppStateHandl
     let username = player.username.clone();
     let room_id = match &player.status {
         PlayerStatus::InGame(rid) => *rid,
-        _ => return, // no chat outside games for now
+        _ => return,
     };
 
-    drop(s); // release read lock
+    drop(s);
 
     let s = state.read().await;
     if let Some(room) = s.rooms.get(&room_id) {
@@ -724,15 +1259,16 @@ pub async fn cleanup_player(player_id: Uuid, state: &crate::AppStateHandle) {
     s.usernames.remove(&player.username);
     s.lobby.remove(&player_id);
 
-    // If in a game, notify opponent and end the room
     if let PlayerStatus::InGame(room_id) = player.status {
         let room = s.rooms.remove(&room_id);
         if let Some(room) = room {
             for (idx, &pid) in room.players.iter().enumerate() {
                 if pid == player_id || room.is_bot[idx] {
+                    if room.is_bot[idx] {
+                        s.players.remove(&pid);
+                    }
                     continue;
                 }
-                // Opponent wins by walkover
                 send_to(
                     &s,
                     pid,
@@ -749,9 +1285,10 @@ pub async fn cleanup_player(player_id: Uuid, state: &crate::AppStateHandle) {
         }
     }
 
-    // Clean up any pending invites this player was part of
-    s.pending_invites.retain(|_, (inviter, invitee, _)| {
-        *inviter != player_id && *invitee != player_id
+    // Clean up any pending rooms this player was part of
+    s.pending_rooms.retain(|_, pr| {
+        !pr.accepted.iter().any(|(id, _)| *id == player_id)
+            && !pr.pending.contains(&player_id)
     });
 
     broadcast_lobby_update(&s);
@@ -777,17 +1314,27 @@ fn broadcast_room(s: &AppState, room_id: Uuid, msg: &ServerMessage) {
 }
 
 fn broadcast_lobby_update(s: &AppState) {
-    let players: Vec<LobbyPlayer> = s.players.values().map(|p| LobbyPlayer {
-        id: p.id,
-        username: p.username.clone(),
-        available: p.status == PlayerStatus::Lobby,
-    }).collect();
+    let players: Vec<LobbyPlayer> = s.players.values()
+        .filter(|p| p.username != "Bot") // skip bot placeholders
+        .map(|p| {
+            let game_type = match &p.status {
+                PlayerStatus::InGame(room_id) => {
+                    s.rooms.get(room_id).map(|r| r.game_type.clone())
+                }
+                _ => None,
+            };
+            LobbyPlayer {
+                id: p.id,
+                username: p.username.clone(),
+                available: p.status == PlayerStatus::Lobby,
+                game_type,
+            }
+        })
+        .collect();
 
     let msg = ServerMessage::LobbyUpdate { players };
-    // Only send to players currently in the lobby — in-game players don't need lobby updates
-    // and mixing lobby updates into game message streams causes ordering confusion.
     for player in s.players.values() {
-        if player.status == PlayerStatus::Lobby {
+        if player.status == PlayerStatus::Lobby && player.username != "Bot" {
             let _ = player.tx.try_send(to_json(&msg));
         }
     }
@@ -801,7 +1348,6 @@ fn error_json(msg: &str) -> String {
     to_json(&ServerMessage::Error { msg: msg.into() })
 }
 
-// Helper to get blackjack game from room
 impl GameInstance {
     fn as_blackjack(&self) -> Option<&BlackjackGame> {
         match self {

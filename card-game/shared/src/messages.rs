@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::deck::Card;
+use crate::poker::HandRank;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum GameType {
     Durak,
     Blackjack,
+    TexasPoker,
 }
 
 impl Default for GameType {
@@ -26,6 +28,11 @@ pub enum GameAction {
     // Blackjack actions
     BlackjackHit,
     BlackjackStand,
+    // Poker actions
+    PokerFold,
+    PokerCheck,
+    PokerCall,
+    PokerRaise { amount: u32 },
 }
 
 /// Messages sent from client → server
@@ -35,10 +42,16 @@ pub enum ClientMessage {
     Join { username: String },
     Rejoin { player_id: Uuid, room_id: Uuid },
     InvitePlayer { target_id: Uuid, game: GameType },
+    /// Invite an additional player to an existing pending room (poker multi-invite)
+    InviteToRoom { room_id: Uuid, target_id: Uuid },
     AcceptInvite { room_id: Uuid },
     DeclineInvite { room_id: Uuid },
     PlayBot { game: GameType },
     GameMove { room_id: Uuid, action: GameAction },
+    /// Forfeit the current game. In poker: fold permanently (game continues if >1 active).
+    ForfeitGame { room_id: Uuid },
+    /// WebRTC signaling — server relays to target player (same room only).
+    VoiceSignal { to: Uuid, signal_type: String, payload: String },
     ChatMessage { text: String },
 }
 
@@ -48,6 +61,28 @@ pub struct LobbyPlayer {
     pub id: Uuid,
     pub username: String,
     pub available: bool,
+    /// Some(GameType) if currently in a game, None if in lobby
+    pub game_type: Option<GameType>,
+}
+
+/// Per-seat info sent in PokerGameStarted
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PokerSeatInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub chips: u32,
+    pub is_bot: bool,
+}
+
+/// Per-player info in PokerStateUpdate (no hole cards revealed)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PokerPlayerInfo {
+    pub id: Uuid,
+    pub chips: u32,
+    pub bet: u32,
+    pub folded: bool,
+    pub active: bool,
+    pub all_in: bool,
 }
 
 /// Outcome of a Blackjack hand
@@ -71,7 +106,7 @@ pub enum ServerMessage {
     IncomingInvite { from: String, from_id: Uuid, room_id: Uuid, game: GameType },
     InviteDeclined { by: String },
 
-    // Game lifecycle
+    // Game lifecycle (Durak + Blackjack)
     GameStarted {
         room_id: Uuid,
         game: GameType,
@@ -81,6 +116,37 @@ pub enum ServerMessage {
         deck_remaining: u8,
         you_attack_first: bool,
     },
+
+    // Poker game lifecycle
+    PokerGameStarted {
+        room_id: Uuid,
+        your_hole_cards: [Card; 2],
+        your_seat: usize,
+        players: Vec<PokerSeatInfo>,
+        dealer_seat: usize,
+        small_blind: u32,
+        big_blind: u32,
+    },
+    PokerStateUpdate {
+        room_id: Uuid,
+        community_cards: Vec<Card>,
+        pot: u32,
+        current_bet: u32,
+        your_chips: u32,
+        your_bet: u32,
+        action_player_id: Uuid,
+        dealer_seat: usize,
+        players_info: Vec<PokerPlayerInfo>,
+    },
+    PokerShowdown {
+        hands: Vec<(Uuid, Vec<Card>, HandRank)>,
+        winner_id: Uuid,
+        pot_won: u32,
+    },
+    PokerPlayerFolded { player_id: Uuid },
+
+    // PokerPlayerInfo embedded in PokerStateUpdate — includes all_in: bool
+    // (see PokerPlayerInfo struct above)
 
     // Durak events
     CardAttacked { card: Card },
@@ -99,6 +165,9 @@ pub enum ServerMessage {
     DealerRevealed { card: Card },
     HandResult { outcome: Outcome, your_score: u8, dealer_score: u8 },
 
+    // Voice relay (same-room only)
+    VoiceSignalRelayed { from: Uuid, signal_type: String, payload: String },
+
     // Shared
     GameOver { winner: Option<Uuid>, reason: String },
     ChatReceived { from: String, text: String },
@@ -110,13 +179,11 @@ mod tests {
     use super::*;
     use crate::deck::{Card, Rank, Suit};
 
-    fn round_trip_client<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
+    fn round_trip_client<T: Serialize + for<'de> Deserialize<'de> + std::fmt::Debug>(
         msg: T,
     ) {
         let json = serde_json::to_string(&msg).expect("serialize failed");
         let back: T = serde_json::from_str(&json).expect("deserialize failed");
-        // We can't derive PartialEq on ClientMessage/ServerMessage easily due to Card,
-        // so just check re-serialization is stable
         let json2 = serde_json::to_string(&back).expect("re-serialize failed");
         assert_eq!(json, json2, "round-trip not stable for {:?}", msg);
     }
@@ -128,10 +195,7 @@ mod tests {
     #[test]
     fn client_join_round_trip() {
         let msg = ClientMessage::Join { username: "Alice".into() };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -140,10 +204,7 @@ mod tests {
             player_id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -154,10 +215,7 @@ mod tests {
                 card: card(Rank::Ace, Suit::Spades),
             },
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -169,10 +227,7 @@ mod tests {
                 defend_card: card(Rank::King, Suit::Hearts),
             },
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -181,10 +236,7 @@ mod tests {
             room_id: Uuid::new_v4(),
             action: GameAction::DurakTakeCards,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -193,41 +245,111 @@ mod tests {
             room_id: Uuid::new_v4(),
             action: GameAction::BlackjackHit,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
     fn client_chat_round_trip() {
         let msg = ClientMessage::ChatMessage { text: "gg wp".into() };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ClientMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
+    }
+
+    // Test plan item 22: PokerGameStarted round-trip
+    #[test]
+    fn server_poker_game_started_round_trip() {
+        let msg = ServerMessage::PokerGameStarted {
+            room_id: Uuid::new_v4(),
+            your_hole_cards: [card(Rank::Ace, Suit::Spades), card(Rank::King, Suit::Hearts)],
+            your_seat: 0,
+            players: vec![
+                PokerSeatInfo { id: Uuid::new_v4(), name: "Alice".into(), chips: 1000, is_bot: false },
+                PokerSeatInfo { id: Uuid::new_v4(), name: "Bob".into(), chips: 1000, is_bot: true },
+            ],
+            dealer_seat: 0,
+            small_blind: 10,
+            big_blind: 20,
+        };
+        round_trip_client(msg);
+    }
+
+    // Test plan item 23: VoiceSignal round-trip
+    #[test]
+    fn client_voice_signal_round_trip() {
+        let msg = ClientMessage::VoiceSignal {
+            to: Uuid::new_v4(),
+            signal_type: "offer".into(),
+            payload: r#"{"sdp":"v=0..."}"#.into(),
+        };
+        round_trip_client(msg);
+    }
+
+    // Test plan item 24: ForfeitGame round-trip
+    #[test]
+    fn client_forfeit_game_round_trip() {
+        let msg = ClientMessage::ForfeitGame { room_id: Uuid::new_v4() };
+        round_trip_client(msg);
+    }
+
+    // Test plan item 25: PokerStateUpdate round-trip
+    #[test]
+    fn server_poker_state_update_round_trip() {
+        let msg = ServerMessage::PokerStateUpdate {
+            room_id: Uuid::new_v4(),
+            community_cards: vec![
+                card(Rank::Ace, Suit::Spades),
+                card(Rank::King, Suit::Hearts),
+                card(Rank::Queen, Suit::Diamonds),
+            ],
+            pot: 120,
+            current_bet: 40,
+            your_chips: 880,
+            your_bet: 40,
+            action_player_id: Uuid::new_v4(),
+            dealer_seat: 0,
+            players_info: vec![
+                PokerPlayerInfo {
+                    id: Uuid::new_v4(),
+                    chips: 880,
+                    bet: 40,
+                    folded: false,
+                    active: true,
+                    all_in: false,
+                },
+            ],
+        };
+        round_trip_client(msg);
+    }
+
+    // Test plan item 26: LobbyPlayer with game_type round-trip
+    #[test]
+    fn lobby_player_with_poker_game_type_round_trip() {
+        let msg = ServerMessage::LobbyUpdate {
+            players: vec![
+                LobbyPlayer {
+                    id: Uuid::new_v4(),
+                    username: "Bob".into(),
+                    available: false,
+                    game_type: Some(GameType::TexasPoker),
+                },
+            ],
+        };
+        round_trip_client(msg);
     }
 
     #[test]
     fn server_welcome_round_trip() {
         let msg = ServerMessage::Welcome { player_id: Uuid::new_v4() };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
     fn server_lobby_update_round_trip() {
         let msg = ServerMessage::LobbyUpdate {
             players: vec![
-                LobbyPlayer { id: Uuid::new_v4(), username: "Bob".into(), available: true },
+                LobbyPlayer { id: Uuid::new_v4(), username: "Bob".into(), available: true, game_type: None },
             ],
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
@@ -236,18 +358,12 @@ mod tests {
             winner: Some(Uuid::new_v4()),
             reason: "opponent disconnected".into(),
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 
     #[test]
     fn server_error_round_trip() {
         let msg = ServerMessage::Error { msg: "Username taken".into() };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ServerMessage = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
+        round_trip_client(msg);
     }
 }

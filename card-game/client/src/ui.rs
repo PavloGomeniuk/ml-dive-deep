@@ -6,9 +6,11 @@ use web_sys::{
     Document, Element, HtmlCanvasElement, HtmlInputElement, HtmlElement,
     KeyboardEvent, MouseEvent, WebSocket, Window,
 };
+use js_sys;
 
 use shared::messages::*;
 use shared::deck::Card;
+use crate::canvas::PokerSeatRender;
 
 use crate::canvas::{self, GameRender, CardAnim, CARD_W, CARD_H};
 use crate::net;
@@ -25,6 +27,7 @@ struct App {
     selected_game: GameType,
     pending_invite: Option<(uuid::Uuid, uuid::Uuid, GameType)>, // (from_id, room_id, game)
     result_countdown: Option<i32>,  // seconds remaining before auto-return to lobby
+    poker_raise_amount: u32,        // tracked for raise slider
 }
 
 impl App {
@@ -39,6 +42,7 @@ impl App {
             selected_game: GameType::Durak,
             pending_invite: None,
             result_countdown: None,
+            poker_raise_amount: 40,
         }
     }
 }
@@ -54,6 +58,9 @@ pub fn init() -> Result<(), JsValue> {
     setup_game_picker(app.clone())?;
     setup_chat(app.clone())?;
     setup_action_buttons(app.clone())?;
+    setup_poker_buttons(app.clone())?;
+    setup_forfeit_button(app.clone())?;
+    setup_keyboard_shortcuts(app.clone())?;
     setup_canvas_events(app.clone())?;
     setup_result_buttons(app.clone())?;
 
@@ -148,16 +155,24 @@ fn do_join(app: AppHandle) {
 
 fn setup_game_picker(app: AppHandle) -> Result<(), JsValue> {
     // Game type selection cards
-    for game_id in &["pick-durak", "pick-blackjack"] {
+    for game_id in &["pick-durak", "pick-blackjack", "pick-poker"] {
+        if doc().get_element_by_id(game_id).is_none() { continue; }
         let el = el(game_id);
         let app = app.clone();
         let game_id_str = game_id.to_string();
         let cb = Closure::<dyn FnMut()>::new(move || {
-            let game = if game_id_str == "pick-durak" { GameType::Durak } else { GameType::Blackjack };
+            let game = match game_id_str.as_str() {
+                "pick-durak" => GameType::Durak,
+                "pick-blackjack" => GameType::Blackjack,
+                _ => GameType::TexasPoker,
+            };
             app.borrow_mut().selected_game = game;
             // Update visual selection
-            el_by_id("pick-durak").class_list().remove_1("selected").unwrap();
-            el_by_id("pick-blackjack").class_list().remove_1("selected").unwrap();
+            for id in &["pick-durak", "pick-blackjack", "pick-poker"] {
+                if let Some(e) = doc().get_element_by_id(id) {
+                    e.class_list().remove_1("selected").unwrap();
+                }
+            }
             el_by_id(&game_id_str).class_list().add_1("selected").unwrap();
         });
         el.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
@@ -498,6 +513,7 @@ fn handle_server_message(app: AppHandle, json: String) {
             let game_name = match &game {
                 GameType::Durak => "Durak",
                 GameType::Blackjack => "Blackjack",
+                GameType::TexasPoker => "Texas Hold'em",
             };
             set_text("invite-text", &format!("{} wants to play {}", from, game_name));
             show("invite-banner");
@@ -542,9 +558,9 @@ fn handle_server_message(app: AppHandle, json: String) {
                 GameType::Blackjack => {
                     show_blackjack_buttons(true);
                     show("action-bar");
-                    // Pre-populate dealer hand with 1 face-up, 1 face-down
-                    // Dealer hand comes from server; for BJ start we show player hand only.
-                    // Dealer visible card is sent via DealerCard messages.
+                }
+                GameType::TexasPoker => {
+                    // Poker handled via PokerGameStarted
                 }
             }
 
@@ -644,6 +660,122 @@ fn handle_server_message(app: AppHandle, json: String) {
             let won = winner == player_id;
             let push = winner.is_none() && reason.to_lowercase().contains("push");
             show_result(won, push, &reason, app.clone());
+        }
+
+        ServerMessage::PokerGameStarted { room_id, your_hole_cards, your_seat, players, dealer_seat, small_blind, big_blind } => {
+            hide("picker-screen");
+            hide("waiting-overlay");
+            hide("invite-banner");
+            show("game-screen");
+            show("chat-panel");
+            show("forfeit-btn");
+
+            let my_id = app.borrow().player_id;
+            let mut a = app.borrow_mut();
+            a.current_room = Some(room_id);
+            a.render = GameRender::new();
+            a.render.game_type = GameType::TexasPoker;
+            a.render.poker_hole_cards = your_hole_cards.to_vec();
+            a.render.poker_your_seat = your_seat;
+            a.render.poker_dealer_seat = dealer_seat;
+
+            a.render.poker_seats = players.iter().enumerate().map(|(i, p)| {
+                PokerSeatRender {
+                    id: p.id,
+                    name: p.name.clone(),
+                    chips: p.chips,
+                    bet: 0,
+                    folded: false,
+                    active: true,
+                    all_in: false,
+                    is_action: false,
+                    is_dealer: i == dealer_seat,
+                    is_you: Some(p.id) == my_id,
+                }
+            }).collect();
+
+            set_text("sb-opponent", &format!("{} players", players.len()));
+            set_text("sb-turn", "Waiting for action...");
+            hide_action_bar_buttons();
+            hide("action-bar");
+
+            canvas::resize_canvas(&canvas_el());
+            append_chat_system(&format!("Texas Hold'em started! Blinds {}/{}", small_blind, big_blind));
+        }
+
+        ServerMessage::PokerStateUpdate { room_id: _, community_cards, pot, current_bet, your_chips, your_bet, action_player_id, dealer_seat, players_info } => {
+            let my_id = app.borrow().player_id;
+            let mut a = app.borrow_mut();
+            a.render.poker_community = community_cards;
+            a.render.poker_pot = pot;
+            a.render.poker_current_bet = current_bet;
+            a.render.poker_your_chips = your_chips;
+            a.render.poker_your_bet = your_bet;
+            a.render.poker_action_id = Some(action_player_id);
+            a.render.poker_dealer_seat = dealer_seat;
+
+            // Update seat states: collect seat IDs first to avoid borrow conflict
+            let seat_ids: Vec<uuid::Uuid> = a.render.poker_seats.iter().map(|s| s.id).collect();
+            for (seat_idx, seat) in a.render.poker_seats.iter_mut().enumerate() {
+                if let Some(info) = players_info.iter().find(|p| p.id == seat.id) {
+                    seat.chips = info.chips;
+                    seat.bet = info.bet;
+                    seat.folded = info.folded;
+                    seat.active = info.active;
+                    seat.all_in = info.all_in;
+                }
+                seat.is_action = seat.id == action_player_id;
+                seat.is_dealer = seat_idx == dealer_seat;
+            }
+
+            let is_my_turn = Some(action_player_id) == my_id;
+            a.render.your_turn = is_my_turn;
+            a.poker_raise_amount = (current_bet * 2).max(current_bet + 20);
+
+            drop(a);
+            show_poker_buttons(&app, is_my_turn);
+            set_text("sb-turn", if is_my_turn { "Your turn" } else { "Waiting..." });
+        }
+
+        ServerMessage::PokerShowdown { hands, winner_id, pot_won } => {
+            let player_id = app.borrow().player_id;
+            let won = Some(winner_id) == player_id;
+            let reason = format!("Pot of {} chips awarded", pot_won);
+            append_chat_system(&format!("Showdown! {} chips to winner", pot_won));
+            for (pid, cards, rank) in &hands {
+                let is_me = Some(*pid) == player_id;
+                let prefix = if is_me { "You" } else { "Opponent" };
+                append_chat_system(&format!("{}: {:?}", prefix, rank));
+            }
+            show_result(won, false, &reason, app.clone());
+        }
+
+        ServerMessage::PokerPlayerFolded { player_id: folded_id } => {
+            let my_id = app.borrow().player_id;
+            let mut a = app.borrow_mut();
+            for seat in &mut a.render.poker_seats {
+                if seat.id == folded_id {
+                    seat.folded = true;
+                }
+            }
+            let name = a.render.poker_seats.iter()
+                .find(|s| s.id == folded_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            drop(a);
+            append_chat_system(&format!("{} folded", name));
+        }
+
+        ServerMessage::VoiceSignalRelayed { from, signal_type, payload } => {
+            // Relay to WebRTC JS handler via postMessage
+            let js_obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&js_obj, &"type".into(), &"voiceSignal".into());
+            let _ = js_sys::Reflect::set(&js_obj, &"from".into(), &from.to_string().into());
+            let _ = js_sys::Reflect::set(&js_obj, &"signalType".into(), &signal_type.into());
+            let _ = js_sys::Reflect::set(&js_obj, &"payload".into(), &payload.into());
+            if let Some(w) = web_sys::window() {
+                let _ = w.post_message(&js_obj, "*");
+            }
         }
 
         ServerMessage::ChatReceived { from, text } => {
@@ -890,6 +1022,126 @@ fn show_result(won: bool, push: bool, reason: &str, app: AppHandle) {
         auto_cb.as_ref().unchecked_ref(), 30000
     ).unwrap();
     auto_cb.forget();
+}
+
+fn setup_poker_buttons(app: AppHandle) -> Result<(), JsValue> {
+    // Fold (F)
+    btn_click("btn-fold", app.clone(), |app| {
+        send_poker_action(app, GameAction::PokerFold);
+    })?;
+    // Check (C)
+    btn_click("btn-check", app.clone(), |app| {
+        send_poker_action(app, GameAction::PokerCheck);
+    })?;
+    // Call (C — same button, toggled in DOM; we use separate IDs)
+    btn_click("btn-call", app.clone(), |app| {
+        send_poker_action(app, GameAction::PokerCall);
+    })?;
+    // Raise (R)
+    btn_click("btn-raise", app.clone(), |app| {
+        let amount = app.borrow().poker_raise_amount;
+        send_poker_action(app, GameAction::PokerRaise { amount });
+    })?;
+    Ok(())
+}
+
+fn send_poker_action(app: AppHandle, action: GameAction) {
+    let (ws, room_id) = {
+        let a = app.borrow();
+        (a.ws.clone(), a.current_room)
+    };
+    if let (Some(ws), Some(room_id)) = (ws, room_id) {
+        net::send(&ws, &ClientMessage::GameMove { room_id, action });
+    }
+}
+
+fn setup_forfeit_button(app: AppHandle) -> Result<(), JsValue> {
+    btn_click("forfeit-btn", app.clone(), |app| {
+        let (ws, room_id) = {
+            let a = app.borrow();
+            (a.ws.clone(), a.current_room)
+        };
+        if let (Some(ws), Some(room_id)) = (ws, room_id) {
+            net::send(&ws, &ClientMessage::ForfeitGame { room_id });
+        }
+    })?;
+    Ok(())
+}
+
+fn setup_keyboard_shortcuts(app: AppHandle) -> Result<(), JsValue> {
+    let cb = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+        // Don't fire shortcuts when typing in input
+        if let Some(target) = e.target() {
+            if let Ok(elem) = target.dyn_into::<web_sys::HtmlElement>() {
+                let tag = elem.tag_name().to_lowercase();
+                if tag == "input" || tag == "textarea" {
+                    return;
+                }
+            }
+        }
+
+        let game_type = app.borrow().render.game_type.clone();
+        match (e.key().as_str(), &game_type) {
+            ("f" | "F", GameType::TexasPoker) => {
+                send_poker_action(app.clone(), GameAction::PokerFold);
+            }
+            ("c" | "C", GameType::TexasPoker) => {
+                let current_bet = app.borrow().render.poker_current_bet;
+                let your_bet = app.borrow().render.poker_your_bet;
+                if current_bet == your_bet {
+                    send_poker_action(app.clone(), GameAction::PokerCheck);
+                } else {
+                    send_poker_action(app.clone(), GameAction::PokerCall);
+                }
+            }
+            ("r" | "R", GameType::TexasPoker) => {
+                let amount = app.borrow().poker_raise_amount;
+                send_poker_action(app.clone(), GameAction::PokerRaise { amount });
+            }
+            _ => {}
+        }
+    });
+    window().add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref())?;
+    cb.forget();
+    Ok(())
+}
+
+fn show_poker_buttons(app: &AppHandle, is_my_turn: bool) {
+    hide("btn-attack");
+    hide("btn-defend");
+    hide("btn-take");
+    hide("btn-end-attack");
+    hide("btn-hit");
+    hide("btn-stand");
+
+    if is_my_turn {
+        show("action-bar");
+        let current_bet = app.borrow().render.poker_current_bet;
+        let your_bet = app.borrow().render.poker_your_bet;
+        show("btn-fold");
+        if current_bet == your_bet {
+            show("btn-check");
+            hide("btn-call");
+        } else {
+            hide("btn-check");
+            show("btn-call");
+        }
+        show("btn-raise");
+    } else {
+        hide("btn-fold");
+        hide("btn-check");
+        hide("btn-call");
+        hide("btn-raise");
+    }
+}
+
+fn hide_action_bar_buttons() {
+    for id in &["btn-attack", "btn-defend", "btn-take", "btn-end-attack",
+                "btn-hit", "btn-stand", "btn-fold", "btn-check", "btn-call", "btn-raise"] {
+        if let Some(e) = doc().get_element_by_id(id) {
+            e.class_list().add_1("hidden").unwrap();
+        }
+    }
 }
 
 fn append_chat_msg(from: &str, text: &str) {
