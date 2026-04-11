@@ -27,6 +27,11 @@ impl Suit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Rank {
+    // Full 52-card ranks (Two-Five needed for Texas Hold'em)
+    Two,
+    Three,
+    Four,
+    Five,
     Six,
     Seven,
     Eight,
@@ -39,9 +44,13 @@ pub enum Rank {
 }
 
 impl Rank {
-    /// Numeric value for comparison. Ace is highest.
+    /// Numeric value for comparison. Ace is highest (14). Two is lowest (2).
     pub fn value(&self) -> u8 {
         match self {
+            Rank::Two => 2,
+            Rank::Three => 3,
+            Rank::Four => 4,
+            Rank::Five => 5,
             Rank::Six => 6,
             Rank::Seven => 7,
             Rank::Eight => 8,
@@ -56,6 +65,10 @@ impl Rank {
 
     pub fn display(&self) -> &'static str {
         match self {
+            Rank::Two => "2",
+            Rank::Three => "3",
+            Rank::Four => "4",
+            Rank::Five => "5",
             Rank::Six => "6",
             Rank::Seven => "7",
             Rank::Eight => "8",
@@ -71,6 +84,10 @@ impl Rank {
     /// Blackjack value: face cards = 10, ace = 11 (caller handles soft ace)
     pub fn blackjack_value(&self) -> u8 {
         match self {
+            Rank::Two => 2,
+            Rank::Three => 3,
+            Rank::Four => 4,
+            Rank::Five => 5,
             Rank::Six => 6,
             Rank::Seven => 7,
             Rank::Eight => 8,
@@ -128,9 +145,27 @@ impl Deck {
 
     /// 36-card deck shuffled fresh — used for Blackjack (6-Ace variant)
     pub fn new_52() -> Self {
-        // We use the 36-card (6-Ace) deck for Blackjack. Standard enough,
-        // and avoids needing Two-Five in the Rank enum (which Durak never uses).
+        // We use the 36-card (6-Ace) deck for Blackjack. Standard enough.
         let mut deck = Self::new_36();
+        deck.shuffle();
+        deck
+    }
+
+    /// True 52-card deck (Two-Ace, all suits) for Texas Hold'em poker.
+    pub fn new_52_full() -> Self {
+        let suits = [Suit::Spades, Suit::Hearts, Suit::Diamonds, Suit::Clubs];
+        let ranks = [
+            Rank::Two, Rank::Three, Rank::Four, Rank::Five, Rank::Six,
+            Rank::Seven, Rank::Eight, Rank::Nine, Rank::Ten,
+            Rank::Jack, Rank::Queen, Rank::King, Rank::Ace,
+        ];
+        let mut cards = Vec::with_capacity(52);
+        for &suit in &suits {
+            for &rank in &ranks {
+                cards.push(Card::new(rank, suit));
+            }
+        }
+        let mut deck = Deck { cards };
         deck.shuffle();
         deck
     }

@@ -1,6 +1,108 @@
 use shared::deck::Card;
 use shared::durak::DurakGame;
 use shared::messages::GameAction;
+use shared::poker::{TexasPokerGame, evaluate_hand};
+
+// ── Poker bot ─────────────────────────────────────────────────────────────────
+
+pub enum PokerBotAction {
+    Fold,
+    Check,
+    Call,
+    Raise(u32),
+}
+
+/// Simple poker bot: pre-flop uses hole card strength; post-flop evaluates best hand.
+pub fn poker_move(game: &TexasPokerGame) -> PokerBotAction {
+    let bot_id = match game.action_player_id() {
+        Some(id) => id,
+        None => return PokerBotAction::Check,
+    };
+
+    let player = match game.players.iter().find(|p| p.id == bot_id) {
+        Some(p) => p,
+        None => return PokerBotAction::Check,
+    };
+
+    let community = &game.community_cards;
+    let call_amount = game.current_bet.saturating_sub(player.bet);
+    let chips = player.chips;
+
+    // Evaluate hand strength (0.0 = worst, 1.0 = best)
+    let strength = if community.is_empty() {
+        pre_flop_strength(&player.hole_cards)
+    } else {
+        let mut all_cards = player.hole_cards.to_vec();
+        all_cards.extend_from_slice(community);
+        post_flop_strength(&player.hole_cards, community)
+    };
+
+    // Decision thresholds
+    if strength > 0.75 {
+        // Strong hand: raise
+        let raise_amount = (game.big_blind * 3).min(chips / 4).max(game.big_blind);
+        PokerBotAction::Raise(game.current_bet + raise_amount)
+    } else if strength > 0.45 {
+        // Medium hand: call or check
+        if call_amount == 0 {
+            PokerBotAction::Check
+        } else if call_amount <= chips / 3 {
+            PokerBotAction::Call
+        } else {
+            PokerBotAction::Fold
+        }
+    } else {
+        // Weak hand: check if free, else fold
+        if call_amount == 0 {
+            PokerBotAction::Check
+        } else {
+            PokerBotAction::Fold
+        }
+    }
+}
+
+/// Pre-flop hand strength heuristic based on hole cards.
+fn pre_flop_strength(hole: &[Card; 2]) -> f64 {
+    let [a, b] = hole;
+    let av = a.rank.value() as f64;
+    let bv = b.rank.value() as f64;
+    let high = av.max(bv);
+    let low = av.min(bv);
+    let suited = a.suit == b.suit;
+    let pair = a.rank == b.rank;
+    let gap = (high - low) as f64;
+
+    // Pair: strong, especially high pairs
+    if pair {
+        return 0.5 + (high - 2.0) / 24.0; // 0.50 (22) to 0.96 (AA)
+    }
+
+    // Base from high card
+    let mut score = (high - 2.0) / 12.0 * 0.5; // 0..0.5
+    score += (low - 2.0) / 12.0 * 0.2;
+    if suited { score += 0.08; }
+    if gap <= 1.0 { score += 0.05; } // connectors
+
+    score.min(0.95).max(0.05)
+}
+
+/// Post-flop strength: rank the best 5-card hand.
+fn post_flop_strength(hole: &[Card; 2], community: &[Card]) -> f64 {
+    let (rank, _) = evaluate_hand(hole, community);
+    use shared::poker::HandRank;
+    match rank {
+        HandRank::HighCard => 0.10,
+        HandRank::OnePair => 0.30,
+        HandRank::TwoPair => 0.50,
+        HandRank::ThreeOfAKind => 0.65,
+        HandRank::Straight => 0.72,
+        HandRank::Flush => 0.78,
+        HandRank::FullHouse => 0.88,
+        HandRank::FourOfAKind => 0.95,
+        HandRank::StraightFlush => 0.98,
+        HandRank::RoyalFlush => 1.00,
+    }
+}
 
 /// Return the bot's next Durak move. Returns None if no valid move found.
 pub fn durak_move(game: &DurakGame, bot_idx: usize) -> Option<GameAction> {

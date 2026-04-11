@@ -34,6 +34,20 @@ pub struct CardAnim {
 }
 
 #[derive(Clone, Default)]
+pub struct PokerSeatRender {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub chips: u32,
+    pub bet: u32,
+    pub folded: bool,
+    pub active: bool,
+    pub all_in: bool,
+    pub is_action: bool,  // it's this player's turn
+    pub is_dealer: bool,
+    pub is_you: bool,
+}
+
+#[derive(Clone, Default)]
 pub struct GameRender {
     pub your_hand: Vec<Card>,
     pub table: Vec<(Card, Option<Card>)>,  // (attack, defense)
@@ -50,6 +64,17 @@ pub struct GameRender {
     pub dealer_hand: Vec<(Card, bool)>,   // (card, face_up)
     pub player_score: u8,
     pub dealer_score: u8,
+    // Poker
+    pub poker_hole_cards: Vec<Card>,       // your 2 hole cards
+    pub poker_community: Vec<Card>,        // 0-5 community cards
+    pub poker_pot: u32,
+    pub poker_current_bet: u32,
+    pub poker_your_chips: u32,
+    pub poker_your_bet: u32,
+    pub poker_seats: Vec<PokerSeatRender>, // all seats including yours
+    pub poker_your_seat: usize,
+    pub poker_dealer_seat: usize,
+    pub poker_action_id: Option<uuid::Uuid>,
 }
 
 impl GameRender {
@@ -100,6 +125,7 @@ pub fn render(canvas: &HtmlCanvasElement, state: &GameRender, anims: &[CardAnim]
     match state.game_type {
         shared::messages::GameType::Durak => render_durak(&ctx, w, h, state, ts),
         shared::messages::GameType::Blackjack => render_blackjack(&ctx, w, h, state, ts),
+        shared::messages::GameType::TexasPoker => render_poker(&ctx, w, h, state),
     }
 
     // Draw animations on top
@@ -234,6 +260,143 @@ fn render_hand(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRende
         let card_y = if selected { y - 14.0 } else if hovered { y - 7.0 } else { y };
         draw_card(ctx, x, card_y, *card, true, selected, hovered);
     }
+}
+
+fn render_poker(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRender) {
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+
+    // ── Community cards (center table) ──
+    let community = &state.poker_community;
+    let n_comm = community.len();
+    let comm_total = 5.0 * CARD_W + 4.0 * 8.0;
+    let comm_x0 = cx - comm_total / 2.0;
+    let comm_y = cy - CARD_H / 2.0;
+
+    // Placeholder slots for 5 community cards
+    for i in 0..5 {
+        let x = comm_x0 + i as f64 * (CARD_W + 8.0);
+        ctx.set_fill_style_str(COLOR_ATTACK_SLOT);
+        rounded_rect(ctx, x, comm_y, CARD_W, CARD_H, CARD_R);
+        ctx.fill();
+    }
+    for (i, card) in community.iter().enumerate() {
+        let x = comm_x0 + i as f64 * (CARD_W + 8.0);
+        draw_card(ctx, x, comm_y, *card, true, false, false);
+    }
+
+    // Pot label
+    ctx.set_fill_style_str("#e0c080");
+    ctx.set_font("bold 13px monospace");
+    let _ = ctx.fill_text(&format!("POT: {}", state.poker_pot), cx - 36.0, comm_y - 12.0);
+
+    // ── Player seats arranged around the table ──
+    // Seat positions relative to center for 2, 3, 4 players
+    // Seat 0 = you (bottom center), others clockwise
+    let n_seats = state.poker_seats.len().max(1);
+    let seat_positions = seat_positions_for(n_seats, w, h);
+
+    for (i, seat) in state.poker_seats.iter().enumerate() {
+        let (sx, sy) = seat_positions[i];
+
+        // Seat box background
+        let bg = if seat.is_action {
+            "#1a3a1a"
+        } else if seat.folded || !seat.active {
+            "#1a1a1a"
+        } else {
+            "#0d1e2e"
+        };
+        ctx.set_fill_style_str(bg);
+        rounded_rect(ctx, sx - 44.0, sy - 18.0, 88.0, 36.0, 6.0);
+        ctx.fill();
+
+        // Action highlight border
+        if seat.is_action {
+            ctx.set_stroke_style_str("#4caf50");
+            ctx.set_line_width(2.0);
+            rounded_rect(ctx, sx - 44.0, sy - 18.0, 88.0, 36.0, 6.0);
+            ctx.stroke();
+        }
+
+        // Name
+        let name_color = if seat.folded || !seat.active { "#555" } else { "#ccc" };
+        ctx.set_fill_style_str(name_color);
+        ctx.set_font("bold 11px monospace");
+        let display_name = if seat.name.len() > 8 {
+            format!("{}…", &seat.name[..7])
+        } else {
+            seat.name.clone()
+        };
+        let _ = ctx.fill_text(&display_name, sx - 40.0, sy - 4.0);
+
+        // Chips
+        ctx.set_fill_style_str("#e0c080");
+        ctx.set_font("10px monospace");
+        let _ = ctx.fill_text(&format!("{}c", seat.chips), sx - 40.0, sy + 10.0);
+
+        // Bet
+        if seat.bet > 0 {
+            ctx.set_fill_style_str("#e94560");
+            let _ = ctx.fill_text(&format!("bet:{}", seat.bet), sx + 2.0, sy + 10.0);
+        }
+
+        // Dealer ◆ button
+        if seat.is_dealer {
+            ctx.set_fill_style_str("#e0c080");
+            ctx.set_font("bold 12px monospace");
+            let _ = ctx.fill_text("◆", sx + 30.0, sy - 6.0);
+        }
+
+        // ALL-IN label
+        if seat.all_in {
+            ctx.set_fill_style_str("#e94560");
+            ctx.set_font("bold 9px monospace");
+            let _ = ctx.fill_text("ALL-IN", sx - 20.0, sy - 22.0);
+        }
+
+        // Folded dim overlay
+        if seat.folded || !seat.active {
+            ctx.set_fill_style_str("rgba(0,0,0,0.4)");
+            rounded_rect(ctx, sx - 44.0, sy - 18.0, 88.0, 36.0, 6.0);
+            ctx.fill();
+        }
+
+        // Your hole cards (bottom seat = you)
+        if seat.is_you && !state.poker_hole_cards.is_empty() {
+            let hx = sx - CARD_W - 4.0;
+            let hy = sy - CARD_H / 2.0;
+            for (j, card) in state.poker_hole_cards.iter().enumerate() {
+                draw_card(ctx, hx + j as f64 * (CARD_W + 4.0), hy, *card, true, false, false);
+            }
+        }
+    }
+
+    // ── Status line (your turn indicator) ──
+    if state.your_turn {
+        ctx.set_fill_style_str("#4caf50");
+        ctx.set_font("bold 12px monospace");
+        let _ = ctx.fill_text("YOUR TURN", cx - 38.0, h - 8.0);
+    }
+}
+
+/// Returns (x, y) canvas positions for each seat index.
+/// Seat 0 is always bottom-center (you). Others go clockwise.
+fn seat_positions_for(n: usize, w: f64, h: f64) -> Vec<(f64, f64)> {
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+    let rx = w * 0.38;
+    let ry = h * 0.32;
+    let mut positions = Vec::with_capacity(n);
+    for i in 0..n {
+        // Start from bottom (PI/2 = down), go clockwise
+        // seat 0 = bottom, then right, top, left for 4 seats
+        let angle = std::f64::consts::FRAC_PI_2 + (i as f64 * std::f64::consts::TAU / n as f64);
+        let x = cx + rx * angle.cos();
+        let y = cy + ry * angle.sin();
+        positions.push((x, y));
+    }
+    positions
 }
 
 // ── Card drawing primitives ──────────────────────────────────────────────────
