@@ -23,7 +23,7 @@ COPY shared/ shared/
 COPY client/ client/
 # Server Cargo.toml needed for workspace resolution
 COPY server/Cargo.toml server/Cargo.toml
-
+RUN mkdir -p server/src && echo 'fn main() {}' > server/src/main.rs
 # Build WASM — output lands in server/static/pkg/
 RUN wasm-pack build client --target web --out-dir ../server/static/pkg
 
