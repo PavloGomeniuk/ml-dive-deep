@@ -297,6 +297,7 @@
     #players-online {
       flex-shrink: 0;
       border-top: 1px solid var(--border-hi);
+      position: relative;
     }
     #players-online summary {
       padding: 8px 14px;
@@ -308,10 +309,24 @@
       user-select: none;
     }
     #players-online summary::-webkit-details-marker { display: none; }
+    #players-online summary::before {
+      content: '▶ ';
+      font-size: 9px;
+    }
+    #players-online[open] summary::before {
+      content: '▼ ';
+    }
     #players-online-list {
-      max-height: 120px;
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      right: 0;
+      max-height: 160px;
       overflow-y: auto;
       background: var(--bg-panel);
+      border: 1px solid var(--border-hi);
+      border-bottom: none;
+      z-index: 60;
     }
 
     /* Chat panel */
