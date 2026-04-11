@@ -297,6 +297,7 @@
     #players-online {
       flex-shrink: 0;
       border-top: 1px solid var(--border-hi);
+      position: relative;
     }
     #players-online summary {
       padding: 8px 14px;
@@ -308,10 +309,24 @@
       user-select: none;
     }
     #players-online summary::-webkit-details-marker { display: none; }
+    #players-online summary::before {
+      content: '▶ ';
+      font-size: 9px;
+    }
+    #players-online[open] summary::before {
+      content: '▼ ';
+    }
     #players-online-list {
-      max-height: 120px;
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      right: 0;
+      max-height: 160px;
       overflow-y: auto;
       background: var(--bg-panel);
+      border: 1px solid var(--border-hi);
+      border-bottom: none;
+      z-index: 60;
     }
 
     /* Chat panel */
@@ -437,6 +452,37 @@
       color: var(--text-dim);
       padding: 0 6px;
     }
+
+    /* ── MOBILE OVERRIDES ── */
+    @media (max-width: 600px) {
+      #chat-panel {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        top: auto;
+        width: 100%;
+        height: 55vh;
+        border-left: none;
+        border-top: 1px solid var(--border-hi);
+        transform: translateY(100%);
+        transition: transform 0.2s ease;
+        z-index: 60;
+      }
+      #chat-panel.mobile-open {
+        transform: translateY(0);
+      }
+      #chat-toggle {
+        top: auto;
+        bottom: calc(44px + 36px + 4px);
+        right: 8px;
+        writing-mode: horizontal-tb;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 12px;
+        z-index: 61;
+      }
+      #canvas { cursor: default; }
+    }
   </style>
 </head>
 <body>
@@ -523,8 +569,7 @@
     <button class="action-btn hidden" id="btn-stand">Stand</button>
     <!-- Poker buttons (F/C/R keyboard shortcuts) -->
     <button class="action-btn hidden" id="btn-fold" title="Fold [F]">Fold <kbd>F</kbd></button>
-    <button class="action-btn hidden" id="btn-check" title="Check [C]">Check <kbd>C</kbd></button>
-    <button class="action-btn hidden" id="btn-call" title="Call [C]">Call <kbd>C</kbd></button>
+    <button class="action-btn hidden" id="btn-check-call" title="Check or Call [C]">Check <kbd>C</kbd></button>
     <button class="action-btn primary hidden" id="btn-raise" title="Raise [R]">Raise <kbd>R</kbd></button>
     <!-- Forfeit button (all games) -->
     <button class="action-btn hidden" id="forfeit-btn" style="margin-left:auto;background:#2a0a0a;border-color:#5a1a1a;color:#e94560" title="Forfeit current game">Forfeit</button>
@@ -535,6 +580,9 @@
     <summary>Players Online (<span id="players-count">0</span>)</summary>
     <div id="players-online-list"></div>
   </details>
+
+  <!-- Chat toggle tab (desktop sidebar, mobile bottom-sheet handle) -->
+  <button id="chat-toggle" title="Toggle chat">Chat</button>
 
   <!-- Chat panel -->
   <div id="chat-panel">
@@ -616,9 +664,57 @@ function setVoiceStatus(msg) {
 
 document.getElementById('voice-btn').addEventListener('click', () => {
   if (!voiceActive) {
-    startVoice();
+    startVoice().then(() => {
+      if (voiceActive) initiateVoiceConnections();
+    });
   } else {
     toggleMute();
+  }
+});
+
+// Initiate WebRTC offers to all peers in the current room.
+// Called after mic is captured successfully.
+async function initiateVoiceConnections() {
+  const roomPeers = window.voiceRoomPeers || [];
+  for (const peerId of roomPeers) {
+    if (peers[peerId]) continue; // already connected
+    const pc = createPeerConnection(peerId);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendVoiceSignal(peerId, 'offer', offer);
+    } catch (e) {
+      console.warn('WebRTC offer failed for', peerId, e);
+    }
+  }
+}
+
+// ── Chat toggle ──────────────────────────────────────────────────────────────
+const _chatPanel  = document.getElementById('chat-panel');
+const _chatToggle = document.getElementById('chat-toggle');
+let _chatVisible  = true;
+
+function _isMobile() { return window.innerWidth <= 600; }
+
+_chatToggle.addEventListener('click', () => {
+  if (_isMobile()) {
+    _chatVisible = !_chatVisible;
+    if (_chatVisible) {
+      _chatPanel.classList.add('mobile-open');
+      _chatToggle.textContent = '✕ Chat';
+    } else {
+      _chatPanel.classList.remove('mobile-open');
+      _chatToggle.textContent = '💬 Chat';
+    }
+  } else {
+    _chatVisible = !_chatVisible;
+    if (_chatVisible) {
+      _chatPanel.classList.remove('hidden');
+      _chatToggle.textContent = '✕';
+    } else {
+      _chatPanel.classList.add('hidden');
+      _chatToggle.textContent = '💬';
+    }
   }
 });
 

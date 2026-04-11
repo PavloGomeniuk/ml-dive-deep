@@ -22,6 +22,7 @@ struct App {
     player_id: Option<uuid::Uuid>,
     username: String,
     current_room: Option<uuid::Uuid>,
+    opponent_id: Option<uuid::Uuid>,  // PvP opponent UUID for WebRTC voice
     render: GameRender,
     anims: Vec<CardAnim>,
     selected_game: GameType,
@@ -37,6 +38,7 @@ impl App {
             player_id: None,
             username: String::new(),
             current_room: None,
+            opponent_id: None,
             render: GameRender::new(),
             anims: Vec::new(),
             selected_game: GameType::Durak,
@@ -150,6 +152,14 @@ fn do_join(app: AppHandle) {
 
     let mut a = app.borrow_mut();
     a.username = username_clone;
+    // Expose WebSocket for the JS WebRTC voice layer
+    if let Some(w) = web_sys::window() {
+        let _ = js_sys::Reflect::set(
+            &w,
+            &wasm_bindgen::JsValue::from_str("cardArenaWs"),
+            &ws.clone().into(),
+        );
+    }
     a.ws = Some(ws);
 }
 
@@ -525,15 +535,29 @@ fn handle_server_message(app: AppHandle, json: String) {
             show_picker_error(&format!("{} declined your invite", by));
         }
 
-        ServerMessage::GameStarted { room_id, game, your_hand, opponent_name, trump, deck_remaining, you_attack_first } => {
+        ServerMessage::GameStarted { room_id, game, your_hand, opponent_name, opponent_id, trump, deck_remaining, you_attack_first } => {
             hide("picker-screen");
             hide("waiting-overlay");
             hide("invite-banner");
             show("game-screen");
             show("chat-panel");
 
+            // Expose opponent UUID to the JS WebRTC voice layer
+            if let Some(w) = web_sys::window() {
+                let peers_js = js_sys::Array::new();
+                if let Some(oid) = opponent_id {
+                    peers_js.push(&wasm_bindgen::JsValue::from_str(&oid.to_string()));
+                }
+                let _ = js_sys::Reflect::set(
+                    &w,
+                    &wasm_bindgen::JsValue::from_str("voiceRoomPeers"),
+                    &peers_js,
+                );
+            }
+
             let mut a = app.borrow_mut();
             a.current_room = Some(room_id);
+            a.opponent_id = opponent_id;
             a.render = GameRender::new();
             a.render.game_type = game.clone();
             a.render.your_hand = your_hand;
@@ -610,9 +634,30 @@ fn handle_server_message(app: AppHandle, json: String) {
         }
 
         ServerMessage::TurnEnded { you_attack, your_new_cards, deck_remaining } => {
+            // Animate new cards flying from the deck area to the player's hand
+            let canvas = canvas_el();
+            let cw = canvas.width() as f64;
+            let ch = canvas.height() as f64;
+            let ts = js_sys::Date::now();
+
             let mut a = app.borrow_mut();
             a.render.table.clear();
-            a.render.your_hand.extend(your_new_cards);
+            let existing = a.render.your_hand.len();
+            a.render.your_hand.extend(your_new_cards.iter().copied());
+
+            for (i, &card) in your_new_cards.iter().enumerate() {
+                a.anims.push(CardAnim {
+                    card,
+                    from_x: 20.0,
+                    from_y: ch / 2.0 - CARD_H / 2.0,
+                    to_x: cw / 2.0 - 30.0 + (existing + i) as f64 * 4.0,
+                    to_y: ch - CARD_H - 12.0,
+                    start_ts: ts + i as f64 * 120.0,
+                    duration: 450.0,
+                    face_up: true,
+                });
+            }
+
             a.render.is_attacker = you_attack;
             a.render.your_turn = you_attack;
             a.render.deck_remaining = deck_remaining;
@@ -634,10 +679,28 @@ fn handle_server_message(app: AppHandle, json: String) {
         }
 
         ServerMessage::PlayerCard { card } => {
+            let canvas = canvas_el();
+            let cw = canvas.width() as f64;
+            let ch = canvas.height() as f64;
+            let ts = js_sys::Date::now();
+
             let mut a = app.borrow_mut();
+            let existing = a.render.your_hand.len();
             a.render.your_hand.push(card);
             a.render.player_score = shared::blackjack::hand_value(&a.render.your_hand);
             set_text("sb-turn", &format!("Your score: {}", a.render.player_score));
+
+            // Animate new card from deck position
+            a.anims.push(CardAnim {
+                card,
+                from_x: cw / 2.0,
+                from_y: 0.0,
+                to_x: cw / 2.0 - 30.0 + existing as f64 * 4.0,
+                to_y: ch - CARD_H - 12.0,
+                start_ts: ts,
+                duration: 400.0,
+                face_up: true,
+            });
         }
 
         ServerMessage::DealerRevealed { card } => {
@@ -931,6 +994,13 @@ fn update_online_list(players: &[LobbyPlayer], my_id: Option<uuid::Uuid>) {
 }
 
 fn show_durak_buttons(is_attacker: bool) {
+    // Hide all cross-game buttons first
+    hide("btn-hit");
+    hide("btn-stand");
+    hide("btn-fold");
+    hide("btn-check-call");
+    hide("btn-raise");
+
     if is_attacker {
         show("btn-attack");
         show("btn-end-attack");
@@ -942,15 +1012,18 @@ fn show_durak_buttons(is_attacker: bool) {
         hide("btn-attack");
         hide("btn-end-attack");
     }
-    hide("btn-hit");
-    hide("btn-stand");
 }
 
 fn show_blackjack_buttons(player_turn: bool) {
+    // Hide all cross-game buttons first
     hide("btn-attack");
     hide("btn-defend");
     hide("btn-take");
     hide("btn-end-attack");
+    hide("btn-fold");
+    hide("btn-check-call");
+    hide("btn-raise");
+
     if player_turn {
         show("btn-hit");
         show("btn-stand");
@@ -1029,13 +1102,15 @@ fn setup_poker_buttons(app: AppHandle) -> Result<(), JsValue> {
     btn_click("btn-fold", app.clone(), |app| {
         send_poker_action(app, GameAction::PokerFold);
     })?;
-    // Check (C)
-    btn_click("btn-check", app.clone(), |app| {
-        send_poker_action(app, GameAction::PokerCheck);
-    })?;
-    // Call (C — same button, toggled in DOM; we use separate IDs)
-    btn_click("btn-call", app.clone(), |app| {
-        send_poker_action(app, GameAction::PokerCall);
+    // Check / Call (single button, label changes based on bet state)
+    btn_click("btn-check-call", app.clone(), |app| {
+        let current_bet = app.borrow().render.poker_current_bet;
+        let your_bet = app.borrow().render.poker_your_bet;
+        if current_bet == your_bet {
+            send_poker_action(app, GameAction::PokerCheck);
+        } else {
+            send_poker_action(app, GameAction::PokerCall);
+        }
     })?;
     // Raise (R)
     btn_click("btn-raise", app.clone(), |app| {
@@ -1107,6 +1182,7 @@ fn setup_keyboard_shortcuts(app: AppHandle) -> Result<(), JsValue> {
 }
 
 fn show_poker_buttons(app: &AppHandle, is_my_turn: bool) {
+    // Hide all cross-game buttons first
     hide("btn-attack");
     hide("btn-defend");
     hide("btn-take");
@@ -1119,25 +1195,27 @@ fn show_poker_buttons(app: &AppHandle, is_my_turn: bool) {
         let current_bet = app.borrow().render.poker_current_bet;
         let your_bet = app.borrow().render.poker_your_bet;
         show("btn-fold");
-        if current_bet == your_bet {
-            show("btn-check");
-            hide("btn-call");
+        show("btn-check-call");
+        // Update label: Check when no bet to match, Call when behind
+        let label = if current_bet == your_bet {
+            "Check <kbd>C</kbd>"
         } else {
-            hide("btn-check");
-            show("btn-call");
+            "Call <kbd>C</kbd>"
+        };
+        if let Some(btn) = doc().get_element_by_id("btn-check-call") {
+            btn.set_inner_html(label);
         }
         show("btn-raise");
     } else {
         hide("btn-fold");
-        hide("btn-check");
-        hide("btn-call");
+        hide("btn-check-call");
         hide("btn-raise");
     }
 }
 
 fn hide_action_bar_buttons() {
     for id in &["btn-attack", "btn-defend", "btn-take", "btn-end-attack",
-                "btn-hit", "btn-stand", "btn-fold", "btn-check", "btn-call", "btn-raise"] {
+                "btn-hit", "btn-stand", "btn-fold", "btn-check-call", "btn-raise"] {
         if let Some(e) = doc().get_element_by_id(id) {
             e.class_list().add_1("hidden").unwrap();
         }
