@@ -623,6 +623,8 @@ let othersDeafened = false;
 let pendingSignals = {};  // peerId -> [{signalType, payload}]
 // Tracks which peer connections are currently generating an offer (for glare detection)
 let makingOffer = {};     // peerId -> bool
+// ICE candidates received before setRemoteDescription is called are buffered here
+let iceCandidateBuffer = {};  // peerId -> [RTCIceCandidate]
 
 const ICE_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -678,6 +680,7 @@ function stopVoice() {
   peers = {};
   pendingSignals = {};
   makingOffer = {};
+  iceCandidateBuffer = {};
   voiceActive = false;
   updateVoiceBtn();
   setVoiceStatus('');
@@ -804,16 +807,33 @@ async function handleVoiceSignal(fromId, signalType, payload) {
       await pc.setRemoteDescription(payload);
       await pc.setLocalDescription();    // auto-creates an answer
       sendVoiceSignal(fromId, 'answer', pc.localDescription);
+      // Drain any ICE candidates that arrived before the remote description was set
+      for (const c of (iceCandidateBuffer[fromId] || [])) {
+        try { await pc.addIceCandidate(c); } catch (_) {}
+      }
+      delete iceCandidateBuffer[fromId];
     } else if (signalType === 'answer') {
       if (pc.signalingState === 'have-local-offer') {
         await pc.setRemoteDescription(payload);
+        // Drain buffered ICE candidates now that we have a remote description
+        for (const c of (iceCandidateBuffer[fromId] || [])) {
+          try { await pc.addIceCandidate(c); } catch (_) {}
+        }
+        delete iceCandidateBuffer[fromId];
       }
     } else if (signalType === 'ice') {
-      try {
-        await pc.addIceCandidate(payload);
-      } catch (e) {
-        // Ignore ICE candidate errors that happen during a rollback on the polite side
-        if (!polite || !makingOffer[fromId]) console.warn('ICE candidate error', e);
+      if (!pc.remoteDescription) {
+        // Buffer the candidate — remote description hasn't been set yet
+        if (!iceCandidateBuffer[fromId]) iceCandidateBuffer[fromId] = [];
+        iceCandidateBuffer[fromId].push(payload);
+      } else {
+        try {
+          await pc.addIceCandidate(payload);
+        } catch (e) {
+          // Suppress errors on the polite side during offer rollback
+          if (polite && makingOffer[fromId]) return;
+          console.warn('ICE candidate error', e);
+        }
       }
     }
   } catch (e) {
@@ -857,8 +877,12 @@ function createPeerConnection(peerId) {
       audio.muted = othersDeafened;
       document.body.appendChild(audio);
       peers[peerId].audio = audio;
+      // autoplay alone is not reliable across browsers — call play() explicitly.
+      // The returned promise is rejected if autoplay policy blocks it (logged only).
+      audio.play().catch(e => console.warn('Voice audio autoplay blocked:', e));
     } else {
       peers[peerId].audio.srcObject = stream;
+      peers[peerId].audio.play().catch(e => console.warn('Voice audio play failed:', e));
     }
   };
 
