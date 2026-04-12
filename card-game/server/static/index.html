@@ -292,6 +292,7 @@
     .action-btn:disabled { opacity: 0.4; cursor: default; }
     .action-btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
     .action-btn.primary:hover { background: var(--accent-dim); }
+    .action-btn.hidden { display: none; }
 
     /* Players online */
     #players-online {
@@ -436,7 +437,7 @@
     }
 
     /* ── VOICE CHAT ── */
-    #voice-btn {
+    #voice-btn, #others-btn {
       padding: 6px 12px;
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -447,6 +448,7 @@
     }
     #voice-btn.active { border-color: var(--green); color: var(--green); }
     #voice-btn.muted  { border-color: var(--accent); color: var(--accent); }
+    #others-btn.deafened { border-color: var(--accent); color: var(--accent); }
     #voice-status {
       font-size: 10px;
       color: var(--text-dim);
@@ -551,7 +553,8 @@
     <div class="status-item">Deck: <span id="sb-deck">—</span></div>
     <div class="status-item">Turn: <span id="sb-turn">—</span></div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-      <button id="voice-btn" title="Toggle voice chat">🎤 Voice</button>
+      <button id="voice-btn" title="Toggle microphone">🎤 Voice</button>
+      <button id="others-btn" title="Toggle other players' audio">🔊 Others</button>
       <span id="voice-status"></span>
     </div>
   </div>
@@ -561,10 +564,8 @@
 
   <!-- Action buttons -->
   <div id="action-bar">
-    <button class="action-btn primary hidden" id="btn-attack">Attack</button>
-    <button class="action-btn hidden" id="btn-defend">Defend</button>
     <button class="action-btn hidden" id="btn-take">Take Cards</button>
-    <button class="action-btn hidden" id="btn-end-attack">End Attack</button>
+    <button class="action-btn hidden" id="btn-end-attack">End Turn</button>
     <button class="action-btn primary hidden" id="btn-hit">Hit</button>
     <button class="action-btn hidden" id="btn-stand">Stand</button>
     <!-- Poker buttons (F/C/R keyboard shortcuts) -->
@@ -609,13 +610,27 @@
 
 <script>
 // ── WebRTC Voice Chat ─────────────────────────────────────────────────────────
+// Uses the "perfect negotiation" pattern to handle offer collisions correctly.
+// See: https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
+
 let localStream = null;
-let peers = {};  // peerId -> RTCPeerConnection
+// peers: peerId -> { pc: RTCPeerConnection, audio: HTMLAudioElement|null }
+let peers = {};
 let voiceActive = false;
 let voiceMuted = false;
-let voiceRoomPeers = [];  // peer UUIDs in current room
+let othersDeafened = false;
+// Signals received before voice is enabled are buffered here and replayed on start
+let pendingSignals = {};  // peerId -> [{signalType, payload}]
+// Tracks which peer connections are currently generating an offer (for glare detection)
+let makingOffer = {};     // peerId -> bool
 
 const ICE_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+// Our own UUID is set by WASM on Welcome — used to pick polite vs impolite role.
+// The peer with the lexicographically smaller UUID is the "polite" peer and will
+// roll back its own offer if a collision occurs.
+function myId() { return window.cardArenaMyId || ''; }
+function isPolite(peerId) { return myId() < peerId; }
 
 async function startVoice() {
   try {
@@ -624,6 +639,27 @@ async function startVoice() {
     voiceMuted = false;
     updateVoiceBtn();
     setVoiceStatus('Voice on');
+
+    // Add mic tracks to any peer connections created while handling buffered signals
+    for (const peerId of Object.keys(peers)) {
+      localStream.getTracks().forEach(t => peers[peerId].pc.addTrack(t, localStream));
+    }
+
+    // Drain signals buffered while voice was off (the other player may have sent
+    // offers before we clicked "Voice")
+    const buffered = pendingSignals;
+    pendingSignals = {};
+    for (const [peerId, sigs] of Object.entries(buffered)) {
+      for (const sig of sigs) {
+        await handleVoiceSignal(peerId, sig.signalType, sig.payload);
+      }
+    }
+
+    // Create connections to room peers — onnegotiationneeded fires the offer
+    const roomPeers = window.voiceRoomPeers || [];
+    for (const peerId of roomPeers) {
+      if (!peers[peerId]) createPeerConnection(peerId);
+    }
   } catch (e) {
     setVoiceStatus('Mic denied');
     console.warn('Voice chat: mic access denied', e);
@@ -635,8 +671,13 @@ function stopVoice() {
     localStream.getTracks().forEach(t => t.stop());
     localStream = null;
   }
-  Object.values(peers).forEach(pc => pc.close());
+  for (const { pc, audio } of Object.values(peers)) {
+    pc.close();
+    if (audio) audio.remove();
+  }
   peers = {};
+  pendingSignals = {};
+  makingOffer = {};
   voiceActive = false;
   updateVoiceBtn();
   setVoiceStatus('');
@@ -650,11 +691,32 @@ function toggleMute() {
   setVoiceStatus(voiceMuted ? 'Muted' : 'Voice on');
 }
 
+// Mute or unmute all incoming audio from other players
+function toggleOthers() {
+  othersDeafened = !othersDeafened;
+  for (const { audio } of Object.values(peers)) {
+    if (audio) audio.muted = othersDeafened;
+  }
+  updateOthersBtn();
+}
+
 function updateVoiceBtn() {
   const btn = document.getElementById('voice-btn');
   if (!btn) return;
   btn.className = voiceActive ? (voiceMuted ? 'muted' : 'active') : '';
   btn.textContent = voiceActive ? (voiceMuted ? '🔇 Muted' : '🎤 On') : '🎤 Voice';
+}
+
+function updateOthersBtn() {
+  const btn = document.getElementById('others-btn');
+  if (!btn) return;
+  if (othersDeafened) {
+    btn.classList.add('deafened');
+    btn.textContent = '🔇 Others';
+  } else {
+    btn.classList.remove('deafened');
+    btn.textContent = '🔊 Others';
+  }
 }
 
 function setVoiceStatus(msg) {
@@ -663,31 +725,11 @@ function setVoiceStatus(msg) {
 }
 
 document.getElementById('voice-btn').addEventListener('click', () => {
-  if (!voiceActive) {
-    startVoice().then(() => {
-      if (voiceActive) initiateVoiceConnections();
-    });
-  } else {
-    toggleMute();
-  }
+  if (!voiceActive) startVoice();
+  else toggleMute();
 });
 
-// Initiate WebRTC offers to all peers in the current room.
-// Called after mic is captured successfully.
-async function initiateVoiceConnections() {
-  const roomPeers = window.voiceRoomPeers || [];
-  for (const peerId of roomPeers) {
-    if (peers[peerId]) continue; // already connected
-    const pc = createPeerConnection(peerId);
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendVoiceSignal(peerId, 'offer', offer);
-    } catch (e) {
-      console.warn('WebRTC offer failed for', peerId, e);
-    }
-  }
-}
+document.getElementById('others-btn').addEventListener('click', toggleOthers);
 
 // ── Chat toggle ──────────────────────────────────────────────────────────────
 const _chatPanel  = document.getElementById('chat-panel');
@@ -722,10 +764,20 @@ _chatToggle.addEventListener('click', () => {
 window.addEventListener('message', async (ev) => {
   const d = ev.data;
   if (!d || d.type !== 'voiceSignal') return;
-  await handleVoiceSignal(d.from, d.signalType, JSON.parse(d.payload));
+  const payload = JSON.parse(d.payload);
+
+  if (!voiceActive) {
+    // Buffer signals until the user enables their mic.
+    // This is the normal case when the other player clicks "Voice" first.
+    if (!pendingSignals[d.from]) pendingSignals[d.from] = [];
+    pendingSignals[d.from].push({ signalType: d.signalType, payload });
+    return;
+  }
+
+  await handleVoiceSignal(d.from, d.signalType, payload);
 });
 
-// Send a signal through the game WebSocket (WASM exposes sendVoiceSignal)
+// Send a signal through the shared game WebSocket
 function sendVoiceSignal(toId, signalType, payload) {
   if (window.cardArenaWs && window.cardArenaWs.readyState === 1) {
     window.cardArenaWs.send(JSON.stringify({
@@ -737,55 +789,83 @@ function sendVoiceSignal(toId, signalType, payload) {
   }
 }
 
+// ── Perfect negotiation signal handler ───────────────────────────────────────
 async function handleVoiceSignal(fromId, signalType, payload) {
-  if (!voiceActive) return;
-
-  if (!peers[fromId]) {
-    peers[fromId] = createPeerConnection(fromId);
-  }
-  const pc = peers[fromId];
+  if (!peers[fromId]) createPeerConnection(fromId);
+  const { pc } = peers[fromId];
+  const polite = isPolite(fromId);
 
   try {
     if (signalType === 'offer') {
+      // Detect a collision: we're also in the process of making an offer
+      const collision = makingOffer[fromId] || pc.signalingState !== 'stable';
+      if (!polite && collision) return;  // impolite peer ignores the colliding offer
+      // Polite peer: setRemoteDescription will implicitly roll back our local offer
       await pc.setRemoteDescription(payload);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendVoiceSignal(fromId, 'answer', answer);
+      await pc.setLocalDescription();    // auto-creates an answer
+      sendVoiceSignal(fromId, 'answer', pc.localDescription);
     } else if (signalType === 'answer') {
-      await pc.setRemoteDescription(payload);
+      if (pc.signalingState === 'have-local-offer') {
+        await pc.setRemoteDescription(payload);
+      }
     } else if (signalType === 'ice') {
-      await pc.addIceCandidate(payload);
+      try {
+        await pc.addIceCandidate(payload);
+      } catch (e) {
+        // Ignore ICE candidate errors that happen during a rollback on the polite side
+        if (!polite || !makingOffer[fromId]) console.warn('ICE candidate error', e);
+      }
     }
   } catch (e) {
-    console.warn('WebRTC error handling signal', signalType, e);
-    setVoiceStatus('ICE failure — voice unavailable');
+    console.warn('WebRTC signal error', signalType, 'from', fromId, e);
   }
 }
 
 function createPeerConnection(peerId) {
   const pc = new RTCPeerConnection(ICE_CONFIG);
+  peers[peerId] = { pc, audio: null };
+  makingOffer[peerId] = false;
 
+  // Attach local mic if already captured
   if (localStream) {
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
   }
 
-  pc.onicecandidate = (ev) => {
-    if (ev.candidate) {
-      sendVoiceSignal(peerId, 'ice', ev.candidate);
+  // onnegotiationneeded: fires when tracks are added or the connection is created
+  pc.onnegotiationneeded = async () => {
+    try {
+      makingOffer[peerId] = true;
+      await pc.setLocalDescription();          // auto-creates an offer
+      sendVoiceSignal(peerId, 'offer', pc.localDescription);
+    } catch (e) {
+      console.warn('WebRTC negotiation error for', peerId, e);
+    } finally {
+      makingOffer[peerId] = false;
     }
   };
 
-  pc.ontrack = (ev) => {
-    const audio = new Audio();
-    audio.srcObject = ev.streams[0];
-    audio.autoplay = true;
-    document.body.appendChild(audio);
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) sendVoiceSignal(peerId, 'ice', candidate);
+  };
+
+  pc.ontrack = ({ streams: [stream] }) => {
+    // Reuse one audio element per peer to avoid stacking hidden elements
+    if (!peers[peerId].audio) {
+      const audio = new Audio();
+      audio.srcObject = stream;
+      audio.autoplay = true;
+      audio.muted = othersDeafened;
+      document.body.appendChild(audio);
+      peers[peerId].audio = audio;
+    } else {
+      peers[peerId].audio.srcObject = stream;
+    }
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      setVoiceStatus('ICE failure — voice unavailable');
-    }
+    if (pc.connectionState === 'connected') setVoiceStatus('Voice connected');
+    else if (pc.connectionState === 'failed') setVoiceStatus('Connection failed');
+    else if (pc.connectionState === 'disconnected') setVoiceStatus('Disconnected');
   };
 
   return pc;

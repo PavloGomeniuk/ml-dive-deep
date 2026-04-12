@@ -605,9 +605,15 @@ async fn trigger_bot_move_if_needed(room_id: Uuid, state: &crate::AppStateHandle
         match bot_action {
             Some((GameAction::DurakAttack { .. } | GameAction::DurakDefend { .. }
                   | GameAction::DurakTakeCards | GameAction::DurakEndAttack, bot_idx, _)) => {
-                let mut s = state.write().await;
-                handle_durak_move(&mut s, room_id, bot_idx, bot_action.unwrap().0).await;
-                break;
+                {
+                    let mut s = state.write().await;
+                    handle_durak_move(&mut s, room_id, bot_idx, bot_action.unwrap().0).await;
+                } // write lock released before sleep
+                // Small delay so clients see the move before the next one fires.
+                // Then loop again: if it's still the bot's turn (e.g. EndAttack caused TurnEnded
+                // and bot is now attacker again), the next iteration picks it up.
+                // If it's the human's turn, bot_action will be None → break below.
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
             }
             Some((action, _, Some(bot_player_id))) => {
                 // Poker bot move
@@ -848,6 +854,10 @@ async fn handle_game_move(
     let is_poker_action = matches!(action,
         GameAction::PokerFold | GameAction::PokerCheck | GameAction::PokerCall | GameAction::PokerRaise { .. }
     );
+    let is_durak_action = matches!(action,
+        GameAction::DurakAttack { .. } | GameAction::DurakDefend { .. }
+        | GameAction::DurakTakeCards | GameAction::DurakEndAttack
+    );
 
     {
         let mut s = state.write().await;
@@ -884,8 +894,8 @@ async fn handle_game_move(
         }
     } // write lock released
 
-    // After a poker move, trigger any bot responses
-    if is_poker_action {
+    // After any human move, trigger bot responses if it's now the bot's turn
+    if is_poker_action || is_durak_action {
         trigger_bot_move_if_needed(room_id, state).await;
     }
 }

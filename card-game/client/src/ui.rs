@@ -286,39 +286,8 @@ fn do_send_chat(app: AppHandle) {
 }
 
 fn setup_action_buttons(app: AppHandle) -> Result<(), JsValue> {
-    // Durak buttons
-    btn_click("btn-attack", app.clone(), |app| {
-        let (ws, room_id, selected) = {
-            let a = app.borrow();
-            (a.ws.clone(), a.current_room, a.render.selected_hand_idx)
-        };
-        if let (Some(ws), Some(room_id), Some(idx)) = (ws, room_id, selected) {
-            let card = app.borrow().render.your_hand.get(idx).copied();
-            if let Some(card) = card {
-                net::send(&ws, &ClientMessage::GameMove {
-                    room_id,
-                    action: GameAction::DurakAttack { card },
-                });
-            }
-        }
-    })?;
-
-    btn_click("btn-defend", app.clone(), |app| {
-        let (ws, room_id, selected_hand, selected_atk) = {
-            let a = app.borrow();
-            (a.ws.clone(), a.current_room, a.render.selected_hand_idx, a.render.selected_table_attack)
-        };
-        if let (Some(ws), Some(room_id), Some(idx), Some(attack_card)) = (ws, room_id, selected_hand, selected_atk) {
-            let defend_card = app.borrow().render.your_hand.get(idx).copied();
-            if let Some(defend_card) = defend_card {
-                net::send(&ws, &ClientMessage::GameMove {
-                    room_id,
-                    action: GameAction::DurakDefend { attack_card, defend_card },
-                });
-            }
-        }
-    })?;
-
+    // Durak: attack and defend are now triggered by clicking cards on canvas.
+    // Only the end-of-turn confirmation buttons are registered here.
     btn_click("btn-take", app.clone(), |app| {
         let (ws, room_id) = {
             let a = app.borrow();
@@ -333,15 +302,18 @@ fn setup_action_buttons(app: AppHandle) -> Result<(), JsValue> {
     })?;
 
     btn_click("btn-end-attack", app.clone(), |app| {
-        let (ws, room_id) = {
+        let (ws, room_id, is_attacker) = {
             let a = app.borrow();
-            (a.ws.clone(), a.current_room)
+            (a.ws.clone(), a.current_room, a.render.is_attacker)
         };
         if let (Some(ws), Some(room_id)) = (ws, room_id) {
-            net::send(&ws, &ClientMessage::GameMove {
-                room_id,
-                action: GameAction::DurakEndAttack,
-            });
+            // Attacker: stop attacking. Defender: give up, take all cards.
+            let action = if is_attacker {
+                GameAction::DurakEndAttack
+            } else {
+                GameAction::DurakTakeCards
+            };
+            net::send(&ws, &ClientMessage::GameMove { room_id, action });
         }
     })?;
 
@@ -402,7 +374,12 @@ fn setup_canvas_events(app: AppHandle) -> Result<(), JsValue> {
         cb.forget();
     }
 
-    // Click — select card or table attack card
+    // Click — card-click-to-play for Durak; generic selection for other games.
+    //
+    // Durak attacker:  click a hand card → send DurakAttack immediately.
+    // Durak defender:  click hand card (selects it) then click attack card on table
+    //                  (or vice versa) → send DurakDefend as soon as both are chosen.
+    // Other games:     click selects hand/table card for use with action buttons.
     {
         let app = app.clone();
         let cb = Closure::<dyn FnMut(MouseEvent)>::new(move |e: MouseEvent| {
@@ -416,16 +393,66 @@ fn setup_canvas_events(app: AppHandle) -> Result<(), JsValue> {
             let hand_idx = canvas::hit_test_hand(&app.borrow().render, w, h, mx, my);
             let table_card = canvas::hit_test_table(&app.borrow().render, w, h, mx, my);
 
-            let mut a = app.borrow_mut();
-            if let Some(idx) = hand_idx {
-                a.render.selected_hand_idx = Some(idx);
-            } else if let Some(atk) = table_card {
-                a.render.selected_table_attack = Some(atk);
+            let (game_type, is_attacker, your_turn) = {
+                let a = app.borrow();
+                (a.render.game_type.clone(), a.render.is_attacker, a.render.your_turn)
+            };
+
+            if matches!(game_type, GameType::Durak) && your_turn {
+                if is_attacker {
+                    // Attacker: one click on a hand card sends the attack
+                    if let Some(idx) = hand_idx {
+                        let (ws, room_id, card) = {
+                            let a = app.borrow();
+                            (a.ws.clone(), a.current_room, a.render.your_hand.get(idx).copied())
+                        };
+                        if let (Some(ws), Some(room_id), Some(card)) = (ws, room_id, card) {
+                            app.borrow_mut().render.selected_hand_idx = Some(idx);
+                            net::send(&ws, &ClientMessage::GameMove {
+                                room_id,
+                                action: GameAction::DurakAttack { card },
+                            });
+                        }
+                    }
+                } else {
+                    // Defender: click a hand card to defend against the first undefended
+                    // attack card on the table. One click — no two-step selection needed.
+                    if let Some(idx) = hand_idx {
+                        let attack_card = {
+                            let a = app.borrow();
+                            a.render.table.iter()
+                                .find(|(_, def)| def.is_none())
+                                .map(|(atk, _)| *atk)
+                        };
+                        if let Some(attack_card) = attack_card {
+                            let (ws, room_id, defend_card) = {
+                                let a = app.borrow();
+                                (a.ws.clone(), a.current_room, a.render.your_hand.get(idx).copied())
+                            };
+                            if let (Some(ws), Some(room_id), Some(defend_card)) = (ws, room_id, defend_card) {
+                                net::send(&ws, &ClientMessage::GameMove {
+                                    room_id,
+                                    action: GameAction::DurakDefend { attack_card, defend_card },
+                                });
+                                app.borrow_mut().render.selected_hand_idx = None;
+                            }
+                        }
+                    } else if hand_idx.is_none() && table_card.is_none() {
+                        app.borrow_mut().render.selected_hand_idx = None;
+                    }
+                }
             } else {
-                a.render.selected_hand_idx = None;
-                a.render.selected_table_attack = None;
+                // Non-Durak games or not our turn — generic selection only
+                let mut a = app.borrow_mut();
+                if let Some(idx) = hand_idx {
+                    a.render.selected_hand_idx = Some(idx);
+                } else if let Some(atk) = table_card {
+                    a.render.selected_table_attack = Some(atk);
+                } else {
+                    a.render.selected_hand_idx = None;
+                    a.render.selected_table_attack = None;
+                }
             }
-            update_action_buttons(&a);
         });
         canvas.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
         cb.forget();
@@ -512,6 +539,15 @@ fn handle_server_message(app: AppHandle, json: String) {
             let username = app.borrow().username.clone();
             set_text("picker-greeting", &format!("Hello, {}", username));
             show("picker-screen");
+            // Expose our own UUID to JS so the WebRTC layer can determine
+            // polite vs impolite peer (used for offer-collision handling).
+            if let Some(w) = web_sys::window() {
+                let _ = js_sys::Reflect::set(
+                    &w,
+                    &wasm_bindgen::JsValue::from_str("cardArenaMyId"),
+                    &wasm_bindgen::JsValue::from_str(&player_id.to_string()),
+                );
+            }
         }
 
         ServerMessage::LobbyUpdate { players } => {
@@ -571,7 +607,7 @@ fn handle_server_message(app: AppHandle, json: String) {
                 set_text("sb-trump", &format!("{}{}", t.rank.display(), t.suit.symbol()));
             }
             set_text("sb-deck", &deck_remaining.to_string());
-            set_text("sb-turn", if you_attack_first { "Your turn" } else { "Opponent's turn" });
+            set_text("sb-turn", if you_attack_first { "Click a card to attack" } else { "Opponent is attacking..." });
 
             // Show game-appropriate buttons
             match game {
@@ -593,33 +629,40 @@ fn handle_server_message(app: AppHandle, json: String) {
         }
 
         ServerMessage::CardAttacked { card } => {
-            {
-                let mut a = app.borrow_mut();
-                // Remove from attacker's hand if it's ours
-                // The server already validated; we just update display state
-                a.render.table.push((card, None));
-                // Remove from our hand if we played it
-                a.render.your_hand.retain(|c| *c != card);
-                a.render.selected_hand_idx = None;
-                set_text("sb-turn", "Defend");
+            let is_attacker = app.borrow().render.is_attacker;
+            let mut a = app.borrow_mut();
+            a.render.table.push((card, None));
+            a.render.your_hand.retain(|c| *c != card);
+            a.render.selected_hand_idx = None;
+            if !is_attacker {
+                // Opponent attacked us — it's our turn to defend
+                a.render.your_turn = true;
+                set_text("sb-turn", "Click a card to defend");
+            } else {
+                set_text("sb-turn", "You attacked — opponent is defending...");
             }
-            update_action_buttons(&app.borrow());
         }
 
         ServerMessage::CardDefended { attack_card, defend_card } => {
-            {
-                let mut a = app.borrow_mut();
-                for (atk, def) in &mut a.render.table {
-                    if *atk == attack_card && def.is_none() {
-                        *def = Some(defend_card);
-                        break;
-                    }
+            let is_attacker = app.borrow().render.is_attacker;
+            let mut a = app.borrow_mut();
+            for (atk, def) in &mut a.render.table {
+                if *atk == attack_card && def.is_none() {
+                    *def = Some(defend_card);
+                    break;
                 }
-                a.render.your_hand.retain(|c| *c != defend_card);
-                a.render.selected_hand_idx = None;
-                a.render.selected_table_attack = None;
             }
-            update_action_buttons(&app.borrow());
+            a.render.your_hand.retain(|c| *c != defend_card);
+            a.render.selected_hand_idx = None;
+            a.render.selected_table_attack = None;
+            if !is_attacker {
+                // Check if there are still undefended attack cards to handle
+                let still_undefended = a.render.table.iter().any(|(_, def)| def.is_none());
+                a.render.your_turn = still_undefended;
+                if !still_undefended {
+                    set_text("sb-turn", "Defended — waiting for opponent...");
+                }
+            }
         }
 
         ServerMessage::CardsTaken { cards } => {
@@ -630,7 +673,7 @@ fn handle_server_message(app: AppHandle, json: String) {
             a.render.table.clear();
             // We receive all cards so we can tell if we're the ones taking
             // The server should send us our new hand in TurnEnded; for now just clear table
-            set_text("sb-turn", "Cards taken — your attack next");
+            set_text("sb-turn", "Cards taken");
         }
 
         ServerMessage::TurnEnded { you_attack, your_new_cards, deck_remaining } => {
@@ -646,11 +689,16 @@ fn handle_server_message(app: AppHandle, json: String) {
             a.render.your_hand.extend(your_new_cards.iter().copied());
 
             for (i, &card) in your_new_cards.iter().enumerate() {
+                // Approximate landing x using the same overlap as render_hand (30px for ≤8 cards)
+                let overlap = if a.render.your_hand.len() > 8 { 22.0 } else { 30.0 };
+                let total_w = CARD_W + (a.render.your_hand.len().saturating_sub(1)) as f64 * overlap;
+                let start_x = (cw - total_w) / 2.0;
+                let to_x = start_x + (existing + i) as f64 * overlap;
                 a.anims.push(CardAnim {
                     card,
                     from_x: 20.0,
                     from_y: ch / 2.0 - CARD_H / 2.0,
-                    to_x: cw / 2.0 - 30.0 + (existing + i) as f64 * 4.0,
+                    to_x,
                     to_y: ch - CARD_H - 12.0,
                     start_ts: ts + i as f64 * 120.0,
                     duration: 450.0,
@@ -664,7 +712,7 @@ fn handle_server_message(app: AppHandle, json: String) {
             a.render.selected_hand_idx = None;
             a.render.selected_table_attack = None;
             set_text("sb-deck", &deck_remaining.to_string());
-            set_text("sb-turn", if you_attack { "Your attack" } else { "Opponent's attack" });
+            set_text("sb-turn", if you_attack { "Click a card to attack" } else { "Opponent is attacking..." });
             drop(a);
             show_durak_buttons(app.borrow().render.is_attacker);
         }
@@ -691,11 +739,14 @@ fn handle_server_message(app: AppHandle, json: String) {
             set_text("sb-turn", &format!("Your score: {}", a.render.player_score));
 
             // Animate new card from deck position
+            let overlap = if a.render.your_hand.len() > 8 { 22.0 } else { 30.0 };
+            let total_w = CARD_W + (a.render.your_hand.len().saturating_sub(1)) as f64 * overlap;
+            let to_x = (cw - total_w) / 2.0 + existing as f64 * overlap;
             a.anims.push(CardAnim {
                 card,
                 from_x: cw / 2.0,
                 from_y: 0.0,
-                to_x: cw / 2.0 - 30.0 + existing as f64 * 4.0,
+                to_x,
                 to_y: ch - CARD_H - 12.0,
                 start_ts: ts,
                 duration: 400.0,
@@ -993,31 +1044,22 @@ fn update_online_list(players: &[LobbyPlayer], my_id: Option<uuid::Uuid>) {
     }
 }
 
-fn show_durak_buttons(is_attacker: bool) {
-    // Hide all cross-game buttons first
+fn show_durak_buttons(_is_attacker: bool) {
+    // Hide all non-Durak buttons
     hide("btn-hit");
     hide("btn-stand");
     hide("btn-fold");
     hide("btn-check-call");
     hide("btn-raise");
+    hide("btn-take");
 
-    if is_attacker {
-        show("btn-attack");
-        show("btn-end-attack");
-        hide("btn-defend");
-        hide("btn-take");
-    } else {
-        show("btn-defend");
-        show("btn-take");
-        hide("btn-attack");
-        hide("btn-end-attack");
-    }
+    // "End Turn" is shown for both attack and defend phases.
+    // The click handler sends DurakEndAttack (attacker) or DurakTakeCards (defender).
+    show("btn-end-attack");
 }
 
 fn show_blackjack_buttons(player_turn: bool) {
     // Hide all cross-game buttons first
-    hide("btn-attack");
-    hide("btn-defend");
     hide("btn-take");
     hide("btn-end-attack");
     hide("btn-fold");
@@ -1033,14 +1075,8 @@ fn show_blackjack_buttons(player_turn: bool) {
     }
 }
 
-fn update_action_buttons(a: &App) {
-    // Enable/disable based on selection state
-    let has_card = a.render.selected_hand_idx.is_some();
-    let has_atk = a.render.selected_table_attack.is_some();
-
-    set_disabled("btn-attack", !has_card);
-    set_disabled("btn-defend", !(has_card && has_atk));
-}
+// update_action_buttons removed — attack and defend are now triggered by card
+// clicks, not buttons. No enable/disable management needed for those actions.
 
 fn show_result(won: bool, push: bool, reason: &str, app: AppHandle) {
     hide("game-screen");
@@ -1183,8 +1219,6 @@ fn setup_keyboard_shortcuts(app: AppHandle) -> Result<(), JsValue> {
 
 fn show_poker_buttons(app: &AppHandle, is_my_turn: bool) {
     // Hide all cross-game buttons first
-    hide("btn-attack");
-    hide("btn-defend");
     hide("btn-take");
     hide("btn-end-attack");
     hide("btn-hit");
@@ -1214,7 +1248,7 @@ fn show_poker_buttons(app: &AppHandle, is_my_turn: bool) {
 }
 
 fn hide_action_bar_buttons() {
-    for id in &["btn-attack", "btn-defend", "btn-take", "btn-end-attack",
+    for id in &["btn-take", "btn-end-attack",
                 "btn-hit", "btn-stand", "btn-fold", "btn-check-call", "btn-raise"] {
         if let Some(e) = doc().get_element_by_id(id) {
             e.class_list().add_1("hidden").unwrap();
@@ -1303,11 +1337,4 @@ fn set_text(id: &str, text: &str) {
     el(id).set_inner_html(text);
 }
 
-fn set_disabled(id: &str, disabled: bool) {
-    let e = el(id);
-    if disabled {
-        e.set_attribute("disabled", "").unwrap();
-    } else {
-        e.remove_attribute("disabled").unwrap();
-    }
-}
+
