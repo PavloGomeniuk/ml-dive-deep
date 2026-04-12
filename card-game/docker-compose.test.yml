@@ -16,7 +16,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "sh", "-c", "echo > /dev/tcp/localhost/3000"]
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/ > /dev/null 2>&1"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -39,9 +39,13 @@ services:
     build:
       context: .
       dockerfile: test/Dockerfile.test
-    command: ["npx", "playwright", "test", "--config", "playwright.config.js", "--reporter=list"]
+    command: ["node_modules/.bin/playwright", "test", "--config", "playwright.config.js", "--reporter=list"]
+    # Use host networking so Chromium connects via localhost:3000.
+    # navigator.mediaDevices requires a secure context; localhost is always trusted,
+    # but arbitrary hostnames (e.g. "server") are not — even over plain HTTP.
+    network_mode: host
     environment:
-      - SERVER_URL=http://server:3000
+      - SERVER_URL=http://localhost:3000
     depends_on:
       server:
         condition: service_healthy

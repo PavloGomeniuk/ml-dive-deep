@@ -15,7 +15,7 @@ module.exports = defineConfig({
         '--use-fake-ui-for-media-stream',
       ],
     },
-    // Grant microphone to the test origin
-    permissions: ['microphone'],
+    // Grant microphone and camera to the test origin
+    permissions: ['microphone', 'camera'],
   },
 });

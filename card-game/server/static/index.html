@@ -455,6 +455,95 @@
       padding: 0 6px;
     }
 
+    /* ── VIDEO CHAT ── */
+    #video-btn {
+      padding: 6px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #video-btn.active { border-color: var(--green); color: var(--green); }
+    #video-btn.muted  { border-color: var(--accent); color: var(--accent); }
+
+    /* Floating draggable + browser-resizable video window */
+    #video-window {
+      position: fixed;
+      top: 48px;
+      right: 228px;
+      width: 280px;
+      height: 210px;
+      min-width: 160px;
+      min-height: 120px;
+      background: #000;
+      border: 1px solid var(--border-hi);
+      z-index: 80;
+      display: flex;
+      flex-direction: column;
+      resize: both;
+      overflow: hidden;
+    }
+    #video-window.hidden { display: none; }
+
+    #video-window-header {
+      height: 24px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      gap: 6px;
+      cursor: move;
+      font-size: 10px;
+      color: var(--text-dim);
+      user-select: none;
+      flex-shrink: 0;
+    }
+    #video-window-header .vw-title { flex: 1; letter-spacing: 1px; text-transform: uppercase; }
+    #video-window-header .vw-ctrl { padding: 0 4px; cursor: pointer; font-size: 13px; line-height: 1; }
+    #video-window-header .vw-ctrl:hover { color: var(--text); }
+    #video-window-header .vw-close:hover { color: var(--accent); }
+
+    #video-area {
+      flex: 1;
+      position: relative;
+      background: #111;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #remote-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+    /* Local camera preview — picture-in-picture corner */
+    #local-video {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      width: 72px;
+      height: 54px;
+      object-fit: cover;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: #000;
+      z-index: 1;
+    }
+    #video-no-remote {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+    #video-no-remote.hidden { display: none; }
+
     /* ── MOBILE OVERRIDES ── */
     @media (max-width: 600px) {
       #chat-panel {
@@ -555,6 +644,7 @@
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button id="voice-btn" title="Toggle microphone">🎤 Voice</button>
       <button id="others-btn" title="Toggle other players' audio">🔊 Others</button>
+      <button id="video-btn" title="Toggle camera">📷 Video</button>
       <span id="voice-status"></span>
     </div>
   </div>
@@ -608,23 +698,44 @@
   <div id="result-countdown"></div>
 </div>
 
+<!-- ── Video Chat Window ── -->
+<div id="video-window" class="hidden">
+  <div id="video-window-header">
+    <span class="vw-title">📷 Video</span>
+    <span class="vw-ctrl vw-min"  id="video-window-min"   title="Minimize">—</span>
+    <span class="vw-ctrl vw-close" id="video-window-close" title="Close camera">✕</span>
+  </div>
+  <div id="video-area">
+    <!-- Remote peer's video stream -->
+    <video id="remote-video" autoplay playsinline muted></video>
+    <!-- Local camera preview (picture-in-picture) -->
+    <video id="local-video"  autoplay playsinline muted></video>
+    <!-- Shown until remote video arrives -->
+    <div id="video-no-remote">Waiting for video...</div>
+  </div>
+</div>
+
 <script>
 // ── WebRTC Voice Chat ─────────────────────────────────────────────────────────
 // Uses the "perfect negotiation" pattern to handle offer collisions correctly.
 // See: https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
 
-let localStream = null;
-// peers: peerId -> { pc: RTCPeerConnection, audio: HTMLAudioElement|null }
-let peers = {};
-let voiceActive = false;
+let localStream = null;         // audio-only MediaStream from getUserMedia
+let localVideoStream = null;   // video-only MediaStream from getUserMedia
+// peers: peerId -> { pc: RTCPeerConnection, audio: HTMLAudioElement|null, video: HTMLVideoElement|null }
+// These are declared with var so E2E tests can read them via window.* (let/const are not window props).
+var peers = {};
+var voiceActive = false;
 let voiceMuted = false;
+var videoActive = false;
+let videoMuted = false;   // true = camera disabled but connection kept
 let othersDeafened = false;
-// Signals received before voice is enabled are buffered here and replayed on start
-let pendingSignals = {};  // peerId -> [{signalType, payload}]
+// Signals received before any peer connections exist are buffered and replayed on voice/video start
+var pendingSignals = {};  // peerId -> [{signalType, payload}]
 // Tracks which peer connections are currently generating an offer (for glare detection)
 let makingOffer = {};     // peerId -> bool
 // ICE candidates received before setRemoteDescription is called are buffered here
-let iceCandidateBuffer = {};  // peerId -> [RTCIceCandidate]
+var iceCandidateBuffer = {};  // peerId -> [RTCIceCandidate]
 
 const ICE_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -669,10 +780,8 @@ async function startVoice() {
 }
 
 function stopVoice() {
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (localVideoStream) { localVideoStream.getTracks().forEach(t => t.stop()); localVideoStream = null; videoActive = false; }
   for (const { pc, audio } of Object.values(peers)) {
     pc.close();
     if (audio) audio.remove();
@@ -683,7 +792,15 @@ function stopVoice() {
   iceCandidateBuffer = {};
   voiceActive = false;
   updateVoiceBtn();
+  updateVideoBtn();
   setVoiceStatus('');
+  // Clear video window
+  const lv = document.getElementById('local-video');
+  if (lv) lv.srcObject = null;
+  const rv = document.getElementById('remote-video');
+  if (rv) rv.srcObject = null;
+  document.getElementById('video-window').classList.add('hidden');
+  document.getElementById('video-no-remote').classList.remove('hidden');
 }
 
 function toggleMute() {
@@ -692,6 +809,79 @@ function toggleMute() {
   localStream.getAudioTracks().forEach(t => { t.enabled = !voiceMuted; });
   updateVoiceBtn();
   setVoiceStatus(voiceMuted ? 'Muted' : 'Voice on');
+}
+
+// ── Video Chat ────────────────────────────────────────────────────────────────
+
+async function startVideo() {
+  try {
+    localVideoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+    videoActive = true;
+    videoMuted = false;
+    updateVideoBtn();
+
+    // Show local camera preview
+    const lv = document.getElementById('local-video');
+    if (lv) { lv.srcObject = localVideoStream; lv.play().catch(() => {}); }
+
+    // Reveal the floating window so the user sees their own preview immediately
+    document.getElementById('video-window').classList.remove('hidden');
+
+    // Add the video track to any already-open peer connections (renegotiation auto-fires)
+    for (const peerId of Object.keys(peers)) {
+      localVideoStream.getTracks().forEach(t => peers[peerId].pc.addTrack(t, localVideoStream));
+    }
+
+    // Drain signals buffered before any media was active (same pattern as startVoice)
+    const buffered = pendingSignals;
+    pendingSignals = {};
+    for (const [peerId, sigs] of Object.entries(buffered)) {
+      for (const sig of sigs) {
+        await handleVoiceSignal(peerId, sig.signalType, sig.payload);
+      }
+    }
+
+    // Create fresh peer connections for room peers that don't have one yet
+    const roomPeers = window.voiceRoomPeers || [];
+    for (const peerId of roomPeers) {
+      if (!peers[peerId]) createPeerConnection(peerId);
+      // If peers[peerId] already exists, tracks were added in the loop above
+    }
+  } catch (e) {
+    setVoiceStatus('Camera denied');
+    console.warn('Video chat: camera access denied', e);
+  }
+}
+
+function stopVideo() {
+  if (localVideoStream) { localVideoStream.getTracks().forEach(t => t.stop()); localVideoStream = null; }
+  videoActive = false;
+  videoMuted = false;
+  updateVideoBtn();
+  const lv = document.getElementById('local-video');
+  if (lv) lv.srcObject = null;
+  const rv = document.getElementById('remote-video');
+  if (rv) rv.srcObject = null;
+  // Clear peer video references (connections stay open for audio)
+  for (const p of Object.values(peers)) { p.video = null; }
+  document.getElementById('video-window').classList.add('hidden');
+  document.getElementById('video-no-remote').classList.remove('hidden');
+}
+
+function toggleVideoMute() {
+  if (!localVideoStream) return;
+  videoMuted = !videoMuted;
+  localVideoStream.getVideoTracks().forEach(t => { t.enabled = !videoMuted; });
+  updateVideoBtn();
+  const lv = document.getElementById('local-video');
+  if (lv) lv.style.opacity = videoMuted ? '0.25' : '1';
+}
+
+function updateVideoBtn() {
+  const btn = document.getElementById('video-btn');
+  if (!btn) return;
+  btn.className = videoActive ? (videoMuted ? 'muted' : 'active') : '';
+  btn.textContent = videoActive ? (videoMuted ? '📷 Off' : '📷 On') : '📷 Video';
 }
 
 // Mute or unmute all incoming audio from other players
@@ -733,6 +923,10 @@ document.getElementById('voice-btn').addEventListener('click', () => {
 });
 
 document.getElementById('others-btn').addEventListener('click', toggleOthers);
+document.getElementById('video-btn').addEventListener('click', () => {
+  if (!videoActive) startVideo();
+  else toggleVideoMute();
+});
 
 // ── Chat toggle ──────────────────────────────────────────────────────────────
 const _chatPanel  = document.getElementById('chat-panel');
@@ -769,9 +963,9 @@ window.addEventListener('message', async (ev) => {
   if (!d || d.type !== 'voiceSignal') return;
   const payload = JSON.parse(d.payload);
 
-  if (!voiceActive) {
-    // Buffer signals until the user enables their mic.
-    // This is the normal case when the other player clicks "Voice" first.
+  if (Object.keys(peers).length === 0) {
+    // No peer connections yet — buffer until voice or video is started.
+    // This covers the case where the other player clicks Voice/Video first.
     if (!pendingSignals[d.from]) pendingSignals[d.from] = [];
     pendingSignals[d.from].push({ signalType: d.signalType, payload });
     return;
@@ -843,12 +1037,16 @@ async function handleVoiceSignal(fromId, signalType, payload) {
 
 function createPeerConnection(peerId) {
   const pc = new RTCPeerConnection(ICE_CONFIG);
-  peers[peerId] = { pc, audio: null };
+  peers[peerId] = { pc, audio: null, video: null };
   makingOffer[peerId] = false;
 
   // Attach local mic if already captured
   if (localStream) {
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  }
+  // Attach local camera if already captured
+  if (localVideoStream) {
+    localVideoStream.getTracks().forEach(t => pc.addTrack(t, localVideoStream));
   }
 
   // onnegotiationneeded: fires when tracks are added or the connection is created
@@ -868,21 +1066,36 @@ function createPeerConnection(peerId) {
     if (candidate) sendVoiceSignal(peerId, 'ice', candidate);
   };
 
-  pc.ontrack = ({ streams: [stream] }) => {
-    // Reuse one audio element per peer to avoid stacking hidden elements
-    if (!peers[peerId].audio) {
-      const audio = new Audio();
-      audio.srcObject = stream;
-      audio.autoplay = true;
-      audio.muted = othersDeafened;
-      document.body.appendChild(audio);
-      peers[peerId].audio = audio;
-      // autoplay alone is not reliable across browsers — call play() explicitly.
-      // The returned promise is rejected if autoplay policy blocks it (logged only).
-      audio.play().catch(e => console.warn('Voice audio autoplay blocked:', e));
-    } else {
-      peers[peerId].audio.srcObject = stream;
-      peers[peerId].audio.play().catch(e => console.warn('Voice audio play failed:', e));
+  pc.ontrack = ({ track, streams }) => {
+    const stream = streams[0] || new MediaStream([track]);
+    if (track.kind === 'audio') {
+      // ── Remote audio ──────────────────────────────────────────────────────
+      // Reuse one audio element per peer to avoid stacking hidden elements.
+      if (!peers[peerId].audio) {
+        const audio = new Audio();
+        audio.srcObject = stream;
+        audio.autoplay = true;
+        audio.muted = othersDeafened;
+        document.body.appendChild(audio);
+        peers[peerId].audio = audio;
+        // autoplay alone is not reliable across browsers — call play() explicitly.
+        audio.play().catch(e => console.warn('Voice audio autoplay blocked:', e));
+      } else {
+        peers[peerId].audio.srcObject = stream;
+        peers[peerId].audio.play().catch(e => console.warn('Voice audio play failed:', e));
+      }
+    } else if (track.kind === 'video') {
+      // ── Remote video ──────────────────────────────────────────────────────
+      // Use the shared #remote-video element inside the floating window.
+      const remoteEl = document.getElementById('remote-video');
+      if (remoteEl) {
+        remoteEl.srcObject = stream;
+        peers[peerId].video = remoteEl;
+        remoteEl.play().catch(e => console.warn('Remote video play failed:', e));
+        // Hide the "waiting" placeholder and reveal the window
+        document.getElementById('video-no-remote').classList.add('hidden');
+        document.getElementById('video-window').classList.remove('hidden');
+      }
     }
   };
 
@@ -894,6 +1107,47 @@ function createPeerConnection(peerId) {
 
   return pc;
 }
+
+// ── Video window controls (drag + minimize + close) ───────────────────────────
+(function () {
+  const win = document.getElementById('video-window');
+  const hdr = document.getElementById('video-window-header');
+  const area = document.getElementById('video-area');
+  let dragging = false, ox = 0, oy = 0;
+
+  // Drag: grab from header, not from control buttons
+  hdr.addEventListener('mousedown', e => {
+    if (e.target.closest('.vw-ctrl')) return;
+    dragging = true;
+    // Normalise to left/top so we can set absolute position during drag.
+    // The initial CSS uses `right`, so we convert on the first mousedown.
+    const r = win.getBoundingClientRect();
+    win.style.right = 'auto';
+    win.style.left  = r.left + 'px';
+    win.style.top   = r.top  + 'px';
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    win.style.left = Math.max(0, e.clientX - ox) + 'px';
+    win.style.top  = Math.max(0, e.clientY - oy) + 'px';
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+
+  // Minimize: toggle video area visibility while keeping header visible
+  document.getElementById('video-window-min').addEventListener('click', () => {
+    const minimized = area.style.display === 'none';
+    area.style.display = minimized ? '' : 'none';
+    // Let the window shrink to header height when minimized
+    win.style.height = minimized ? '' : 'auto';
+    document.getElementById('video-window-min').textContent = minimized ? '—' : '□';
+  });
+
+  // Close: stop camera and hide window
+  document.getElementById('video-window-close').addEventListener('click', stopVideo);
+})();
 </script>
 
 <script type="module">

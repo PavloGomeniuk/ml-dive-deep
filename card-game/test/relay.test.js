@@ -183,6 +183,46 @@ async function run() {
   const bad = await unexpectedAtB;
   assert(bad === null, 'Signal to unknown player ID is silently dropped');
 
+  // ── Test 7: Video offer (renegotiation) relayed A→B ─────────────────────────
+  // Simulates Player A adding a camera track and sending a renegotiation offer.
+  console.log('\nTest 7: Video renegotiation offer A→B relayed');
+  const videoOfferAtB = waitForMessage(wsB, m =>
+    m.type === 'VoiceSignalRelayed' && m.signal_type === 'offer',
+  );
+  send(wsA, {
+    type: 'VoiceSignal',
+    to: idB,
+    signal_type: 'offer',
+    payload: JSON.stringify({
+      type: 'offer',
+      sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n',
+    }),
+  });
+  const videoOffer = await videoOfferAtB;
+  assert(videoOffer.signal_type === 'offer', 'Video renegotiation offer type preserved');
+  assert(videoOffer.payload.includes('m=video'), 'Video SDP line present in relayed offer');
+  assert(videoOffer.from === idA, 'Renegotiation offer carries correct sender ID');
+
+  // ── Test 8: Video ICE candidate relayed B→A ──────────────────────────────────
+  // ICE candidates for the video media line are relayed just like audio ones.
+  console.log('\nTest 8: Video ICE candidate B→A relayed');
+  const videoIceAtA = waitForMessage(wsA, m =>
+    m.type === 'VoiceSignalRelayed' && m.signal_type === 'ice',
+  );
+  send(wsB, {
+    type: 'VoiceSignal',
+    to: idA,
+    signal_type: 'ice',
+    payload: JSON.stringify({
+      candidate: 'candidate:2 1 UDP 2122252543 127.0.0.1 10 typ host',
+      sdpMid: '1',        // video media line index
+      sdpMLineIndex: 1,
+    }),
+  });
+  const videoIce = await videoIceAtA;
+  assert(videoIce.signal_type === 'ice', 'Video ICE signal type preserved');
+  assert(videoIce.payload.includes('"1"'), 'Video sdpMid preserved in ICE candidate');
+
   // ── Done ───────────────────────────────────────────────────────────────────
   wsA.close();
   wsB.close();
