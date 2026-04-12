@@ -1,0 +1,16 @@
+# Test runner image: Node.js + Playwright (Chromium) for voice chat tests.
+FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+
+WORKDIR /tests
+
+# Copy test files
+COPY test/package.json ./package.json
+COPY test/relay.test.js ./relay.test.js
+COPY test/voice.spec.js ./voice.spec.js
+COPY test/playwright.config.js ./playwright.config.js
+
+# Install test dependencies (ws + @playwright/test already in the Playwright image)
+RUN npm install --omit=dev
+
+# Default to relay tests; docker-compose.test.yml overrides `command`
+CMD ["node", "relay.test.js"]

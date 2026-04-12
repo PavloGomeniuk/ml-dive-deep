@@ -1,0 +1,14 @@
+{
+  "name": "card-game-voice-tests",
+  "private": true,
+  "scripts": {
+    "test:relay": "node relay.test.js",
+    "test:e2e":   "npx playwright test --reporter=list"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
+  }
+}
