@@ -4,9 +4,9 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 // ── Design constants ──────────────────────────────────────────────────────────
-pub const CARD_W: f64 = 60.0;
-pub const CARD_H: f64 = 90.0;
-pub const CARD_R: f64 = 4.0; // corner radius
+pub const CARD_W: f64 = 80.0;
+pub const CARD_H: f64 = 120.0;
+pub const CARD_R: f64 = 6.0; // corner radius
 
 const COLOR_TABLE:    &str = "#0a1628";
 const COLOR_TABLE_FELT: &str = "#0d2040";
@@ -116,10 +116,10 @@ pub fn render(canvas: &HtmlCanvasElement, state: &GameRender, anims: &[CardAnim]
     ctx.set_fill_style_str(COLOR_TABLE);
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Felt oval in center
+    // Felt oval in center — kept tight so cards fill the visible area
     ctx.set_fill_style_str(COLOR_TABLE_FELT);
     ctx.begin_path();
-    let _ = ctx.ellipse(w / 2.0, h / 2.0, w * 0.38, h * 0.35, 0.0, 0.0, std::f64::consts::TAU);
+    let _ = ctx.ellipse(w / 2.0, h / 2.0, w * 0.28, h * 0.26, 0.0, 0.0, std::f64::consts::TAU);
     ctx.fill();
 
     match state.game_type {
@@ -144,10 +144,11 @@ fn render_durak(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRend
 
     // ── Opponent cards (face down, top center) ──
     let opp_count = state.opponent_card_count as usize;
-    let opp_y = 20.0;
-    let opp_start_x = center_x - (opp_count as f64 * 20.0) / 2.0;
+    let opp_y = 16.0;
+    let opp_overlap = 28.0;
+    let opp_start_x = center_x - (opp_count as f64 * opp_overlap) / 2.0;
     for i in 0..opp_count {
-        let x = opp_start_x + i as f64 * 20.0;
+        let x = opp_start_x + i as f64 * opp_overlap;
         draw_card_back(ctx, x, opp_y);
     }
 
@@ -178,7 +179,7 @@ fn render_durak(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRend
     // ── Table (center) ──
     let table_len = state.table.len();
     if table_len > 0 {
-        let slot_w = CARD_W + 12.0;
+        let slot_w = CARD_W + 16.0;
         let total_w = table_len as f64 * slot_w * 2.0 - slot_w;
         let table_x = center_x - total_w / 2.0;
         let atk_y = center_y - CARD_H / 2.0 - 10.0;
@@ -203,6 +204,20 @@ fn render_durak(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRend
 
     // ── Your hand (bottom) ──
     render_hand(ctx, w, h, state);
+
+    // ── Contextual hint ──
+    let hint = if state.your_turn && state.is_attacker {
+        "click a card to attack"
+    } else if state.your_turn && !state.is_attacker {
+        "click a card to defend"
+    } else {
+        ""
+    };
+    if !hint.is_empty() {
+        ctx.set_fill_style_str("rgba(180,180,180,0.55)");
+        ctx.set_font("11px monospace");
+        let _ = ctx.fill_text(hint, center_x - 100.0, h - CARD_H - 24.0);
+    }
 }
 
 fn render_blackjack(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRender, _ts: f64) {
@@ -221,11 +236,11 @@ fn render_blackjack(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &Game
         }
     }
 
-    // Dealer score label
+    // Dealer score label — sits just below the dealer cards
     if state.dealer_score > 0 {
         ctx.set_fill_style_str("#888");
         ctx.set_font("13px monospace");
-        let _ = ctx.fill_text(&format!("Dealer: {}", state.dealer_score), center_x - 30.0, 140.0);
+        let _ = ctx.fill_text(&format!("Dealer: {}", state.dealer_score), center_x - 30.0, 30.0 + CARD_H + 16.0);
     }
 
     // ── Player hand (bottom) ──
@@ -248,7 +263,7 @@ fn render_hand(ctx: &CanvasRenderingContext2d, w: f64, h: f64, state: &GameRende
     if hand.is_empty() {
         return;
     }
-    let overlap = if hand.len() > 8 { 16.0 } else { 22.0 };
+    let overlap = if hand.len() > 8 { 22.0 } else { 30.0 };
     let total_w = CARD_W + (hand.len() - 1) as f64 * overlap;
     let start_x = (w - total_w) / 2.0;
     let y = h - CARD_H - 12.0;
@@ -450,24 +465,24 @@ pub fn draw_card(
     let suit = card.suit.symbol().to_string();
 
     // Top-left rank+suit
-    ctx.set_font("bold 11px monospace");
-    let _ = ctx.fill_text(rank, x + 4.0, y + 14.0);
-    ctx.set_font("10px monospace");
-    let _ = ctx.fill_text(&suit, x + 4.0, y + 26.0);
+    ctx.set_font("bold 14px monospace");
+    let _ = ctx.fill_text(rank, x + 5.0, y + 18.0);
+    ctx.set_font("12px monospace");
+    let _ = ctx.fill_text(&suit, x + 5.0, y + 32.0);
 
     // Center suit
-    ctx.set_font("28px monospace");
-    let _ = ctx.fill_text(&suit, x + CARD_W / 2.0 - 10.0, y + CARD_H / 2.0 + 10.0);
+    ctx.set_font("36px monospace");
+    let _ = ctx.fill_text(&suit, x + CARD_W / 2.0 - 12.0, y + CARD_H / 2.0 + 12.0);
 
     // Bottom-right rank+suit (rotated 180°)
     ctx.save();
-    ctx.translate(x + CARD_W - 4.0, y + CARD_H - 4.0).unwrap();
+    ctx.translate(x + CARD_W - 5.0, y + CARD_H - 5.0).unwrap();
     ctx.rotate(std::f64::consts::PI).unwrap();
-    ctx.set_font("bold 11px monospace");
+    ctx.set_font("bold 14px monospace");
     ctx.set_fill_style_str(color);
-    let _ = ctx.fill_text(rank, 0.0, 12.0);
-    ctx.set_font("10px monospace");
-    let _ = ctx.fill_text(&suit, 0.0, 24.0);
+    let _ = ctx.fill_text(rank, 0.0, 16.0);
+    ctx.set_font("12px monospace");
+    let _ = ctx.fill_text(&suit, 0.0, 30.0);
     ctx.restore();
 }
 
@@ -488,9 +503,9 @@ fn draw_card_back(ctx: &CanvasRenderingContext2d, x: f64, y: f64) {
     // Diamond pattern
     ctx.set_stroke_style_str(COLOR_BACK_PATTERN);
     ctx.set_line_width(0.5);
-    let pad = 6.0;
+    let pad = 8.0;
     for i in 0..4 {
-        let off = i as f64 * 8.0;
+        let off = i as f64 * 10.0;
         rounded_rect(ctx, x + pad + off, y + pad + off, CARD_W - 2.0 * (pad + off), CARD_H - 2.0 * (pad + off), 2.0);
         ctx.stroke();
     }
@@ -518,7 +533,7 @@ pub fn hit_test_hand(state: &GameRender, canvas_w: f64, canvas_h: f64, mx: f64, 
     if hand.is_empty() {
         return None;
     }
-    let overlap = if hand.len() > 8 { 16.0 } else { 22.0 };
+    let overlap = if hand.len() > 8 { 22.0 } else { 30.0 };
     let total_w = CARD_W + (hand.len() - 1) as f64 * overlap;
     let start_x = (canvas_w - total_w) / 2.0;
     let y = canvas_h - CARD_H - 12.0;
@@ -540,7 +555,7 @@ pub fn hit_test_table(state: &GameRender, canvas_w: f64, canvas_h: f64, mx: f64,
     if table_len == 0 {
         return None;
     }
-    let slot_w = CARD_W + 12.0;
+    let slot_w = CARD_W + 16.0;  // must match render_durak
     let total_w = table_len as f64 * slot_w * 2.0 - slot_w;
     let table_x = canvas_w / 2.0 - total_w / 2.0;
     let atk_y = canvas_h / 2.0 - CARD_H / 2.0 - 10.0;

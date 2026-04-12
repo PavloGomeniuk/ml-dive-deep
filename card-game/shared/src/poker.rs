@@ -172,6 +172,9 @@ pub struct TexasPokerGame {
     pub round: BettingRound,
     pub small_blind: u32,
     pub big_blind: u32,
+    /// How many players have acted this betting street. Round only ends
+    /// when this reaches the number of in-hand players AND all bets match.
+    pub round_actors_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +239,7 @@ impl TexasPokerGame {
             round: BettingRound::PreFlop,
             small_blind,
             big_blind,
+            round_actors_count: 0,
         }
     }
 
@@ -321,7 +325,15 @@ impl TexasPokerGame {
                 if self.players[idx].chips == 0 {
                     self.players[idx].all_in = true;
                 }
+                // Raise resets the counter: raiser counts as 1, everyone else must re-act
+                self.round_actors_count = 1;
             }
+        }
+
+        // For non-Raise actions, count this player's action
+        // (Raise already set round_actors_count = 1 above)
+        if !matches!(action, PokerAction::Raise(_)) {
+            self.round_actors_count += 1;
         }
 
         self.advance_action();
@@ -351,11 +363,14 @@ impl TexasPokerGame {
             return;
         }
 
-        // Check if all in-hand players have matched the current bet or are all-in
-        let round_complete = in_hand.iter().all(|&i| {
+        // Round ends only when every in-hand player has acted AND bets all match.
+        // The round_actors_count guard prevents collapsing the round on the very
+        // first action after advance_round() resets all bets to 0.
+        let bets_match = in_hand.iter().all(|&i| {
             let p = &self.players[i];
             p.bet == self.current_bet || p.all_in
         });
+        let round_complete = bets_match && self.round_actors_count >= in_hand.len();
 
         if round_complete {
             self.advance_round();
@@ -382,11 +397,12 @@ impl TexasPokerGame {
     }
 
     fn advance_round(&mut self) {
-        // Reset per-round bets
+        // Reset per-round bets and actor count
         for p in self.players.iter_mut() {
             p.bet = 0;
         }
         self.current_bet = 0;
+        self.round_actors_count = 0;
 
         match self.round {
             BettingRound::PreFlop => {
