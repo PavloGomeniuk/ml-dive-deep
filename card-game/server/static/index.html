@@ -544,6 +544,149 @@
     }
     #video-no-remote.hidden { display: none; }
 
+    /* ── LOUNGE ── */
+    #lounge-tab-btn {
+      display: inline-block;
+      padding: 6px 16px;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+      margin-bottom: 20px;
+    }
+    #lounge-tab-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    #lounge-screen {
+      position: fixed; inset: 0;
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      padding: 28px 32px 24px;
+      z-index: 100;
+    }
+    #lounge-screen.hidden { display: none; }
+
+    .lounge-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .lounge-title {
+      font-size: 18px;
+      color: var(--accent);
+      letter-spacing: 3px;
+      flex: 1;
+    }
+    .lounge-media-btns {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .lounge-media-btn {
+      padding: 5px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .lounge-media-btn:hover  { border-color: var(--accent); color: var(--accent); }
+    .lounge-media-btn.active { border-color: var(--green); color: var(--green); }
+    .lounge-media-btn.muted  { border-color: var(--accent); color: var(--accent); }
+
+    #lounge-leave-btn {
+      padding: 5px 14px;
+      background: transparent;
+      border: 1px solid var(--accent-dim);
+      color: var(--accent);
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #lounge-leave-btn:hover { background: var(--accent); color: white; }
+
+    .lounge-body {
+      flex: 1;
+      display: flex;
+      gap: 16px;
+      min-height: 0;
+    }
+
+    /* Member sidebar */
+    #lounge-members-panel {
+      width: 160px;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+    .lounge-panel-header {
+      padding: 7px 10px;
+      font-size: 10px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    #lounge-members-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 0;
+    }
+    .lounge-member-row {
+      padding: 5px 10px;
+      font-size: 12px;
+      color: var(--text);
+      border-bottom: 1px solid #1a2a3e;
+    }
+    .lounge-member-row:last-child { border-bottom: none; }
+
+    /* Chat area */
+    #lounge-chat-panel {
+      flex: 1;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    #lounge-chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #lounge-chat-input-row {
+      display: flex;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #lounge-chat-input {
+      flex: 1;
+      padding: 8px;
+      background: var(--bg-deep);
+      border: none;
+      color: var(--text);
+      font-family: monospace;
+      font-size: 12px;
+      outline: none;
+    }
+    #lounge-chat-send {
+      padding: 8px 12px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
     /* ── MOBILE OVERRIDES ── */
     @media (max-width: 600px) {
       #chat-panel {
@@ -608,6 +751,7 @@
   <div class="picker-header">CARD ARENA</div>
   <div class="picker-greeting" id="picker-greeting">Hello, Player</div>
   <div class="picker-sub">Choose a game and an opponent</div>
+  <button id="lounge-tab-btn">💬 Open Lounge (voice &amp; chat, up to 10)</button>
 
   <div class="game-cards">
     <div class="game-card selected" id="pick-durak" data-game="Durak">
@@ -630,6 +774,37 @@
   <div class="section-label">Choose Opponent</div>
   <div id="player-list">
     <div id="picker-empty" class="hidden">No other players online — only bot available</div>
+  </div>
+</div>
+
+<!-- ── Lounge Screen ── -->
+<div id="lounge-screen" class="hidden">
+  <div class="lounge-header">
+    <div class="lounge-title">💬 LOUNGE</div>
+    <div class="lounge-media-btns">
+      <button id="lounge-voice-btn" class="lounge-media-btn" title="Toggle microphone">🎤 Voice</button>
+      <button id="lounge-others-btn" class="lounge-media-btn" title="Mute others">🔊 Others</button>
+      <button id="lounge-video-btn" class="lounge-media-btn" title="Toggle camera">📷 Video</button>
+    </div>
+    <button id="lounge-leave-btn">← Leave</button>
+  </div>
+
+  <div class="lounge-body">
+    <!-- Members sidebar -->
+    <div id="lounge-members-panel">
+      <div class="lounge-panel-header">Members (<span id="lounge-member-count">0</span>/10)</div>
+      <div id="lounge-members-list"></div>
+    </div>
+
+    <!-- Chat panel -->
+    <div id="lounge-chat-panel">
+      <div class="lounge-panel-header">Chat</div>
+      <div id="lounge-chat-messages"></div>
+      <div id="lounge-chat-input-row">
+        <input type="text" id="lounge-chat-input" placeholder="message..." maxlength="200" autocomplete="off">
+        <button id="lounge-chat-send">→</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -926,6 +1101,38 @@ document.getElementById('others-btn').addEventListener('click', toggleOthers);
 document.getElementById('video-btn').addEventListener('click', () => {
   if (!videoActive) startVideo();
   else toggleVideoMute();
+});
+
+// ── Lounge media buttons — mirror the game-screen controls ───────────────────
+// Keep lounge buttons in sync with voice/video state via a lightweight poll.
+// We avoid re-declaring updateVoiceBtn/updateVideoBtn (same-scope hoisting would
+// cause the captured "original" to refer to the new declaration, causing
+// infinite recursion).  A 200ms setInterval is simple and correct.
+function _syncLoungeBtns() {
+  const lv = document.getElementById('lounge-voice-btn');
+  if (lv) {
+    lv.className = 'lounge-media-btn' + (voiceActive ? (voiceMuted ? ' muted' : ' active') : '');
+    lv.textContent = voiceActive ? (voiceMuted ? '🔇 Muted' : '🎤 On') : '🎤 Voice';
+  }
+  const lvid = document.getElementById('lounge-video-btn');
+  if (lvid) {
+    lvid.className = 'lounge-media-btn' + (videoActive ? (videoMuted ? ' muted' : ' active') : '');
+    lvid.textContent = videoActive ? (videoMuted ? '📷 Off' : '📷 On') : '📷 Video';
+  }
+  const lo = document.getElementById('lounge-others-btn');
+  if (lo) {
+    lo.className = 'lounge-media-btn' + (othersDeafened ? ' muted' : '');
+    lo.textContent = othersDeafened ? '🔇 Others' : '🔊 Others';
+  }
+}
+setInterval(_syncLoungeBtns, 200);
+
+document.getElementById('lounge-voice-btn').addEventListener('click', () => {
+  if (!voiceActive) startVoice(); else toggleMute();
+});
+document.getElementById('lounge-others-btn').addEventListener('click', toggleOthers);
+document.getElementById('lounge-video-btn').addEventListener('click', () => {
+  if (!videoActive) startVideo(); else toggleVideoMute();
 });
 
 // ── Chat toggle ──────────────────────────────────────────────────────────────

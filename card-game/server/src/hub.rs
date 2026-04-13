@@ -12,11 +12,14 @@ use crate::bot;
 
 // ── State types ──────────────────────────────────────────────────────────────
 
+pub const LOUNGE_MAX: usize = 10;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerStatus {
     Lobby,
     InvitePending,
     InGame(Uuid),
+    InLounge,
 }
 
 pub struct PlayerInfo {
@@ -56,6 +59,9 @@ pub struct AppState {
     pub usernames: HashSet<String>,
     // room_id → pending room state
     pub pending_rooms: HashMap<Uuid, PendingRoom>,
+    /// Global lounge: a fixed UUID room for up to LOUNGE_MAX players.
+    pub lounge_id: Uuid,
+    pub lounge_members: Vec<Uuid>,
 }
 
 impl AppState {
@@ -66,6 +72,8 @@ impl AppState {
             lobby: HashSet::new(),
             usernames: HashSet::new(),
             pending_rooms: HashMap::new(),
+            lounge_id: Uuid::new_v4(),
+            lounge_members: Vec::new(),
         }
     }
 }
@@ -156,6 +164,18 @@ async fn handle_message(
                 return;
             }
             handle_chat(player_id, text, state).await;
+        }
+        ClientMessage::JoinLounge => {
+            handle_join_lounge(player_id, tx, state).await;
+        }
+        ClientMessage::LeaveLounge => {
+            handle_leave_lounge(player_id, state).await;
+        }
+        ClientMessage::LoungeChat { text } => {
+            if text.trim().is_empty() {
+                return;
+            }
+            handle_lounge_chat(player_id, text, state).await;
         }
     }
 }
@@ -526,25 +546,36 @@ async fn handle_voice_signal(
 ) {
     let s = state.read().await;
 
-    // Validate both players are in the same room
-    let from_room = match s.players.get(&from_id) {
+    // Determine the "channel" each player is in — either a game room or the lounge.
+    enum Channel { Game(Uuid), Lounge }
+
+    let from_ch = match s.players.get(&from_id) {
         Some(p) => match &p.status {
-            PlayerStatus::InGame(rid) => *rid,
+            PlayerStatus::InGame(rid) => Channel::Game(*rid),
+            PlayerStatus::InLounge    => Channel::Lounge,
             _ => return,
         },
         None => return,
     };
-    let to_room = match s.players.get(&to_id) {
+    let to_ch = match s.players.get(&to_id) {
         Some(p) => match &p.status {
-            PlayerStatus::InGame(rid) => *rid,
+            PlayerStatus::InGame(rid) => Channel::Game(*rid),
+            PlayerStatus::InLounge    => Channel::Lounge,
             _ => return,
         },
         None => return,
     };
 
-    if from_room != to_room {
-        return; // security: same-room only
-    }
+    // Security: sender and recipient must share the same channel.
+    let allowed = match (&from_ch, &to_ch) {
+        (Channel::Game(a), Channel::Game(b)) => a == b,
+        (Channel::Lounge, Channel::Lounge)   => {
+            // Both must actually be in the lounge member list
+            s.lounge_members.contains(&from_id) && s.lounge_members.contains(&to_id)
+        }
+        _ => false,
+    };
+    if !allowed { return; }
 
     send_to(&s, to_id, &ServerMessage::VoiceSignalRelayed { from: from_id, signal_type, payload });
 }
@@ -1346,6 +1377,107 @@ async fn handle_chat(player_id: Uuid, text: String, state: &crate::AppStateHandl
     }
 }
 
+// ── Lounge handlers ──────────────────────────────────────────────────────────
+
+fn lounge_member_list(s: &AppState) -> Vec<LobbyPlayer> {
+    s.lounge_members.iter().filter_map(|&pid| {
+        s.players.get(&pid).map(|p| LobbyPlayer {
+            id: p.id,
+            username: p.username.clone(),
+            available: false,
+            game_type: None,
+        })
+    }).collect()
+}
+
+fn broadcast_lounge_update(s: &AppState) {
+    let members = lounge_member_list(s);
+    let msg = ServerMessage::LoungeUpdate { members };
+    for &pid in &s.lounge_members {
+        send_to(s, pid, &msg);
+    }
+}
+
+async fn handle_join_lounge(
+    player_id: Uuid,
+    tx: &mpsc::Sender<String>,
+    state: &crate::AppStateHandle,
+) {
+    let mut s = state.write().await;
+
+    // Must be a known player in Lobby status
+    let player = match s.players.get(&player_id) {
+        Some(p) => p,
+        None => return,
+    };
+    if player.status != PlayerStatus::Lobby {
+        let _ = tx.send(error_json("Leave your current game before joining the lounge")).await;
+        return;
+    }
+    if s.lounge_members.len() >= LOUNGE_MAX {
+        let _ = tx.send(error_json("Lounge is full (max 10 players)")).await;
+        return;
+    }
+    if s.lounge_members.contains(&player_id) {
+        return; // already in lounge
+    }
+
+    s.players.get_mut(&player_id).unwrap().status = PlayerStatus::InLounge;
+    s.lobby.remove(&player_id);
+    s.lounge_members.push(player_id);
+
+    let lounge_id = s.lounge_id;
+    let members = lounge_member_list(&s);
+
+    // Tell the joining player their lounge room ID and current member list
+    let _ = tx.send(
+        serde_json::to_string(&ServerMessage::LoungeJoined { room_id: lounge_id, members }).unwrap()
+    ).await;
+
+    // Broadcast updated member list to everyone else in the lounge
+    broadcast_lounge_update(&s);
+    // Remove from lobby so the lobby list no longer shows this player
+    broadcast_lobby_update(&s);
+}
+
+async fn handle_leave_lounge(player_id: Uuid, state: &crate::AppStateHandle) {
+    let mut s = state.write().await;
+
+    if !s.lounge_members.contains(&player_id) {
+        return;
+    }
+    s.lounge_members.retain(|&id| id != player_id);
+    if let Some(p) = s.players.get_mut(&player_id) {
+        p.status = PlayerStatus::Lobby;
+    }
+    s.lobby.insert(player_id);
+
+    // Notify the leaving player with an empty member list so the client
+    // detects still_in = false and switches back to the picker screen.
+    let empty_members: Vec<LobbyPlayer> = Vec::new();
+    send_to(&s, player_id, &ServerMessage::LoungeUpdate { members: empty_members });
+
+    // Broadcast updated list to remaining members
+    broadcast_lounge_update(&s);
+    broadcast_lobby_update(&s);
+}
+
+async fn handle_lounge_chat(player_id: Uuid, text: String, state: &crate::AppStateHandle) {
+    let s = state.read().await;
+    let player = match s.players.get(&player_id) {
+        Some(p) => p,
+        None => return,
+    };
+    if player.status != PlayerStatus::InLounge {
+        return;
+    }
+    let username = player.username.clone();
+    let msg = ServerMessage::LoungeChatReceived { from: username, text };
+    for &pid in &s.lounge_members {
+        send_to(&s, pid, &msg);
+    }
+}
+
 // ── Cleanup on disconnect ────────────────────────────────────────────────────
 
 pub async fn cleanup_player(player_id: Uuid, state: &crate::AppStateHandle) {
@@ -1357,6 +1489,12 @@ pub async fn cleanup_player(player_id: Uuid, state: &crate::AppStateHandle) {
     };
     s.usernames.remove(&player.username);
     s.lobby.remove(&player_id);
+
+    // Remove from lounge if present, broadcast update to remaining members
+    if s.lounge_members.contains(&player_id) {
+        s.lounge_members.retain(|&id| id != player_id);
+        broadcast_lounge_update(&s);
+    }
 
     if let PlayerStatus::InGame(room_id) = player.status {
         let room = s.rooms.remove(&room_id);

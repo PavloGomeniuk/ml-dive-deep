@@ -29,6 +29,7 @@ struct App {
     pending_invite: Option<(uuid::Uuid, uuid::Uuid, GameType)>, // (from_id, room_id, game)
     result_countdown: Option<i32>,  // seconds remaining before auto-return to lobby
     poker_raise_amount: u32,        // tracked for raise slider
+    in_lounge: bool,
 }
 
 impl App {
@@ -45,6 +46,7 @@ impl App {
             pending_invite: None,
             result_countdown: None,
             poker_raise_amount: 40,
+            in_lounge: false,
         }
     }
 }
@@ -59,6 +61,7 @@ pub fn init() -> Result<(), JsValue> {
     setup_username_modal(app.clone())?;
     setup_game_picker(app.clone())?;
     setup_chat(app.clone())?;
+    setup_lounge(app.clone())?;
     setup_action_buttons(app.clone())?;
     setup_poker_buttons(app.clone())?;
     setup_forfeit_button(app.clone())?;
@@ -282,6 +285,76 @@ fn do_send_chat(app: AppHandle) {
     let ws = app.borrow().ws.clone();
     if let Some(ws) = ws {
         net::send(&ws, &ClientMessage::ChatMessage { text });
+    }
+}
+
+fn setup_lounge(app: AppHandle) -> Result<(), JsValue> {
+    // "Lounge" tab button in the picker screen
+    if let Some(btn) = doc().get_element_by_id("lounge-tab-btn") {
+        let app2 = app.clone();
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            let ws = app2.borrow().ws.clone();
+            if let Some(ws) = ws {
+                net::send(&ws, &ClientMessage::JoinLounge);
+            }
+        });
+        btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+        cb.forget();
+    }
+
+    // "Leave Lounge" button
+    if let Some(btn) = doc().get_element_by_id("lounge-leave-btn") {
+        let app2 = app.clone();
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            let ws = app2.borrow().ws.clone();
+            if let Some(ws) = ws {
+                net::send(&ws, &ClientMessage::LeaveLounge);
+            }
+        });
+        btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+        cb.forget();
+    }
+
+    // Lounge chat send button
+    if let Some(btn) = doc().get_element_by_id("lounge-chat-send") {
+        let app2 = app.clone();
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            do_send_lounge_chat(app2.clone());
+        });
+        btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+        cb.forget();
+    }
+
+    // Lounge chat input Enter key
+    if let Some(input_el) = doc().get_element_by_id("lounge-chat-input") {
+        let app2 = app.clone();
+        let cb = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+            if e.key() == "Enter" {
+                do_send_lounge_chat(app2.clone());
+            }
+        });
+        input_el.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref())?;
+        cb.forget();
+    }
+
+    // Note: lounge-voice-btn, lounge-video-btn, and lounge-others-btn click handlers
+    // are registered in index.html JS (after the voice/video globals are defined).
+    // Do NOT add them here — that would create duplicate handlers.
+
+    Ok(())
+}
+
+fn do_send_lounge_chat(app: AppHandle) {
+    let input = match doc().get_element_by_id("lounge-chat-input") {
+        Some(el) => el.dyn_into::<HtmlInputElement>().unwrap(),
+        None => return,
+    };
+    let text = input.value().trim().to_string();
+    if text.is_empty() { return; }
+    input.set_value("");
+    let ws = app.borrow().ws.clone();
+    if let Some(ws) = ws {
+        net::send(&ws, &ClientMessage::LoungeChat { text });
     }
 }
 
@@ -896,6 +969,58 @@ fn handle_server_message(app: AppHandle, json: String) {
             append_chat_msg(&from, &text);
         }
 
+        ServerMessage::LoungeJoined { room_id, members } => {
+            app.borrow_mut().in_lounge = true;
+            hide("picker-screen");
+            show("lounge-screen");
+
+            // Tell JS which peers are in the lounge so voice/video can connect
+            if let Some(w) = web_sys::window() {
+                let my_id = app.borrow().player_id;
+                let peers_js = js_sys::Array::new();
+                for m in &members {
+                    if Some(m.id) != my_id {
+                        peers_js.push(&wasm_bindgen::JsValue::from_str(&m.id.to_string()));
+                    }
+                }
+                let _ = js_sys::Reflect::set(&w, &"voiceRoomPeers".into(), &peers_js);
+                // Also store the lounge room ID for reference
+                let _ = js_sys::Reflect::set(&w, &"loungeRoomId".into(), &room_id.to_string().into());
+            }
+
+            update_lounge_members(&members);
+        }
+
+        ServerMessage::LoungeUpdate { members } => {
+            // Refresh the voice peer list with current members
+            if let Some(w) = web_sys::window() {
+                let my_id = app.borrow().player_id;
+                let peers_js = js_sys::Array::new();
+                for m in &members {
+                    if Some(m.id) != my_id {
+                        peers_js.push(&wasm_bindgen::JsValue::from_str(&m.id.to_string()));
+                    }
+                }
+                let _ = js_sys::Reflect::set(&w, &"voiceRoomPeers".into(), &peers_js);
+            }
+            update_lounge_members(&members);
+
+            // If we were in the lounge and now the screen shows picker, sync state
+            if app.borrow().in_lounge {
+                let still_in = members.iter().any(|m| Some(m.id) == app.borrow().player_id);
+                if !still_in {
+                    // We were removed or left
+                    app.borrow_mut().in_lounge = false;
+                    hide("lounge-screen");
+                    show("picker-screen");
+                }
+            }
+        }
+
+        ServerMessage::LoungeChatReceived { from, text } => {
+            append_lounge_chat_msg(&from, &text);
+        }
+
         ServerMessage::Error { msg } => {
             // If we're on the username modal, show error there
             let username_modal_visible = !el("username-modal").class_list().contains("hidden");
@@ -1284,6 +1409,36 @@ fn append_chat_system(text: &str) {
 fn show_picker_error(msg: &str) {
     // Briefly flash a message in the picker — reuse a simple approach
     append_chat_system(msg);
+}
+
+fn append_lounge_chat_msg(from: &str, text: &str) {
+    let doc = doc();
+    if let Some(msgs) = doc.get_element_by_id("lounge-chat-messages") {
+        let div = doc.create_element("div").unwrap();
+        div.set_attribute("class", "chat-msg").unwrap();
+        div.set_inner_html(&format!(
+            "<span class='chat-from'>{}: </span>{}",
+            html_escape(from),
+            html_escape(text)
+        ));
+        msgs.append_child(&div).unwrap();
+        msgs.dyn_ref::<HtmlElement>().unwrap().scroll_to_with_x_and_y(0.0, 999999.0);
+    }
+}
+
+fn update_lounge_members(members: &[LobbyPlayer]) {
+    if let Some(list) = doc().get_element_by_id("lounge-members-list") {
+        list.set_inner_html("");
+        for m in members {
+            let div = doc().create_element("div").unwrap();
+            div.set_attribute("class", "lounge-member-row").unwrap();
+            div.set_inner_html(&html_escape(&m.username));
+            list.append_child(&div).unwrap();
+        }
+    }
+    if let Some(count_el) = doc().get_element_by_id("lounge-member-count") {
+        count_el.set_inner_html(&members.len().to_string());
+    }
 }
 
 fn html_escape(s: &str) -> String {

@@ -342,3 +342,226 @@ test.describe('Voice Chat', () => {
   });
 
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lounge (group chat + voice/video, max 10 players)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('Lounge', () => {
+
+  test('lounge tab button is present in the picker screen', async ({ page }) => {
+    await joinGame(page, 'LoungeTabUser');
+    await expect(page.locator('#lounge-tab-btn')).toBeAttached();
+    await expect(page.locator('#lounge-tab-btn')).toBeVisible();
+  });
+
+  test('lounge screen is hidden before joining', async ({ page }) => {
+    await joinGame(page, 'LoungeHiddenUser');
+    await expect(page.locator('#lounge-screen')).toHaveClass(/hidden/);
+  });
+
+  test('clicking Lounge button shows lounge screen and hides picker', async ({ page }) => {
+    await joinGame(page, 'LoungeJoinUser');
+    await page.click('#lounge-tab-btn');
+
+    // Lounge screen becomes visible
+    await page.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+    // Picker screen hides
+    await expect(page.locator('#picker-screen')).toHaveClass(/hidden/);
+    // Member count shows at least 1 (ourselves)
+    await expect(page.locator('#lounge-member-count')).toHaveText('1');
+  });
+
+  test('two players in lounge see each other in member list', async ({ browser }) => {
+    const ctxA = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const ctxB = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+
+    await joinGame(pageA, 'LoungeMemberA');
+    await joinGame(pageB, 'LoungeMemberB');
+
+    await pageA.click('#lounge-tab-btn');
+    await pageA.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    await pageB.click('#lounge-tab-btn');
+    await pageB.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    // Both pages should show 2 members
+    await pageA.waitForFunction(() => {
+      const el = document.getElementById('lounge-member-count');
+      return el && el.textContent === '2';
+    }, { timeout: 6_000 });
+    await pageB.waitForFunction(() => {
+      const el = document.getElementById('lounge-member-count');
+      return el && el.textContent === '2';
+    }, { timeout: 6_000 });
+
+    // A sees B's name, B sees A's name
+    await expect(pageA.locator('#lounge-members-list')).toContainText('LoungeMemberB');
+    await expect(pageB.locator('#lounge-members-list')).toContainText('LoungeMemberA');
+
+    await ctxA.close();
+    await ctxB.close();
+  });
+
+  test('lounge text chat is relayed to all members', async ({ browser }) => {
+    const ctxA = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const ctxB = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+
+    await joinGame(pageA, 'LoungeChatA');
+    await joinGame(pageB, 'LoungeChatB');
+
+    await pageA.click('#lounge-tab-btn');
+    await pageA.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+    await pageB.click('#lounge-tab-btn');
+    await pageB.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    // Wait for both to see each other
+    await pageA.waitForFunction(() =>
+      document.getElementById('lounge-member-count')?.textContent === '2', { timeout: 6_000 });
+
+    // A sends a message
+    await pageA.fill('#lounge-chat-input', 'Hello lounge!');
+    await pageA.click('#lounge-chat-send');
+
+    // B should receive it
+    await pageB.waitForFunction(() => {
+      const msgs = document.getElementById('lounge-chat-messages');
+      return msgs && msgs.innerText.includes('Hello lounge!');
+    }, { timeout: 6_000 });
+
+    // A's own messages panel also shows it
+    const chatTextA = await pageA.locator('#lounge-chat-messages').innerText();
+    expect(chatTextA).toContain('Hello lounge!');
+
+    await ctxA.close();
+    await ctxB.close();
+  });
+
+  test('leave lounge returns player to picker screen', async ({ page }) => {
+    await joinGame(page, 'LoungeLeaveUser');
+    await page.click('#lounge-tab-btn');
+    await page.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    await page.click('#lounge-leave-btn');
+
+    // Picker screen comes back
+    await page.waitForSelector('#picker-screen:not(.hidden)', { timeout: 5_000 });
+    // Lounge hides
+    await expect(page.locator('#lounge-screen')).toHaveClass(/hidden/);
+  });
+
+  test('lounge voice buttons are present', async ({ page }) => {
+    await joinGame(page, 'LoungeVoiceBtnUser');
+    await page.click('#lounge-tab-btn');
+    await page.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    await expect(page.locator('#lounge-voice-btn')).toBeAttached();
+    await expect(page.locator('#lounge-video-btn')).toBeAttached();
+    await expect(page.locator('#lounge-others-btn')).toBeAttached();
+  });
+
+  test('lounge voice activates mic and updates button', async ({ page }) => {
+    await joinGame(page, 'LoungeVoiceUser');
+    await page.click('#lounge-tab-btn');
+    await page.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    await page.click('#lounge-voice-btn');
+
+    await page.waitForFunction(() => window.voiceActive === true, { timeout: 6_000 });
+
+    // Wait for the 200ms sync loop to update the lounge button text.
+    // waitForFunction IS the assertion — no need to re-read textContent() immediately
+    // after (the sync loop could fire again between the two calls).
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('lounge-voice-btn');
+      return btn && (btn.textContent.includes('On') || btn.textContent.includes('Muted'));
+    }, { timeout: 2_000 });
+
+    // The game-screen voice button is updated synchronously by updateVoiceBtn()
+    await page.waitForFunction(() => {
+      const btn = document.getElementById('voice-btn');
+      return btn && (btn.textContent.includes('On') || btn.textContent.includes('Muted'));
+    }, { timeout: 2_000 });
+  });
+
+  test('two lounge players reach WebRTC "connected" state', async ({ browser }) => {
+    const ctxA = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const ctxB = await browser.newContext({ permissions: ['microphone', 'camera'] });
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+
+    await joinGame(pageA, 'LoungeRTCA');
+    await joinGame(pageB, 'LoungeRTCB');
+
+    await pageA.click('#lounge-tab-btn');
+    await pageA.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+    await pageB.click('#lounge-tab-btn');
+    await pageB.waitForSelector('#lounge-screen:not(.hidden)', { timeout: 5_000 });
+
+    // Wait for both to see each other
+    await pageA.waitForFunction(() =>
+      document.getElementById('lounge-member-count')?.textContent === '2', { timeout: 8_000 });
+
+    // Both enable voice
+    await Promise.all([
+      pageA.click('#lounge-voice-btn'),
+      pageB.click('#lounge-voice-btn'),
+    ]);
+
+    // Both wait for voiceActive
+    await Promise.all([
+      pageA.waitForFunction(() => window.voiceActive === true, { timeout: 8_000 }),
+      pageB.waitForFunction(() => window.voiceActive === true, { timeout: 8_000 }),
+    ]);
+
+    // Both reach WebRTC "connected"
+    await Promise.all([
+      waitForConnectionState(pageA, 'connected', 15_000),
+      waitForConnectionState(pageB, 'connected', 15_000),
+    ]);
+
+    // Audio element created on both sides
+    expect(await audioElementExists(pageA)).toBe(true);
+    expect(await audioElementExists(pageB)).toBe(true);
+
+    await ctxA.close();
+    await ctxB.close();
+  });
+
+  test('lounge rejects join when full (10 players)', async ({ browser }) => {
+    // Open 10 contexts, all join the lounge, the 11th should get an error.
+    const contexts = [];
+    const pages = [];
+    for (let i = 0; i < 11; i++) {
+      const ctx = await browser.newContext({ permissions: ['microphone', 'camera'] });
+      contexts.push(ctx);
+      pages.push(await ctx.newPage());
+    }
+
+    // First 10 join successfully
+    for (let i = 0; i < 10; i++) {
+      await joinGame(pages[i], `LoungeFullUser${i}`);
+      await pages[i].click('#lounge-tab-btn');
+      await pages[i].waitForSelector('#lounge-screen:not(.hidden)', { timeout: 8_000 });
+    }
+
+    // 11th player joins picker but lounge should be full
+    await joinGame(pages[10], 'LoungeFullUser10');
+    await pages[10].click('#lounge-tab-btn');
+
+    // They should stay on picker screen (server rejects with error)
+    // The lounge-screen should remain hidden
+    await pages[10].waitForTimeout(1500);
+    const loungeVisible = await pages[10].evaluate(() =>
+      !document.getElementById('lounge-screen').classList.contains('hidden')
+    );
+    expect(loungeVisible).toBe(false);
+
+    for (const ctx of contexts) await ctx.close();
+  });
+
+});

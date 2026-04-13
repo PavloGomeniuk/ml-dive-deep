@@ -50,9 +50,15 @@ pub enum ClientMessage {
     GameMove { room_id: Uuid, action: GameAction },
     /// Forfeit the current game. In poker: fold permanently (game continues if >1 active).
     ForfeitGame { room_id: Uuid },
-    /// WebRTC signaling — server relays to target player (same room only).
+    /// WebRTC signaling — server relays to target player (same room or lounge).
     VoiceSignal { to: Uuid, signal_type: String, payload: String },
     ChatMessage { text: String },
+    /// Join the global lounge (max 10 players, must not already be in a game).
+    JoinLounge,
+    /// Leave the lounge and return to lobby.
+    LeaveLounge,
+    /// Send a text message to all lounge members.
+    LoungeChat { text: String },
 }
 
 /// Lightweight player info sent to clients in lobby updates
@@ -166,8 +172,16 @@ pub enum ServerMessage {
     DealerRevealed { card: Card },
     HandResult { outcome: Outcome, your_score: u8, dealer_score: u8 },
 
-    // Voice relay (same-room only)
+    // Voice relay (same-room or same-lounge)
     VoiceSignalRelayed { from: Uuid, signal_type: String, payload: String },
+
+    // Lounge (group chat + voice/video, max 10 players)
+    /// Sent to the joining player with current member list and lounge room ID.
+    LoungeJoined { room_id: Uuid, members: Vec<LobbyPlayer> },
+    /// Broadcast to all lounge members when someone joins or leaves.
+    LoungeUpdate { members: Vec<LobbyPlayer> },
+    /// A lounge text message broadcast to all members.
+    LoungeChatReceived { from: String, text: String },
 
     // Shared
     GameOver { winner: Option<Uuid>, reason: String },
