@@ -565,3 +565,41 @@ test.describe('Lounge', () => {
   });
 
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Forfeit button visibility (regression: was only shown in Poker, not all games)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('Forfeit button', () => {
+
+  test('forfeit button is visible in a Durak game', async ({ page }) => {
+    await joinGame(page, 'ForfeitDurakUser');
+    // Start a bot game (Durak is default)
+    await page.waitForSelector('.invite-btn', { timeout: 5_000 });
+    const botBtn = page.locator('.bot-row .invite-btn').first();
+    if (await botBtn.count() > 0) await botBtn.click();
+    else await page.locator('.invite-btn').first().click();
+
+    await waitForGameScreen(page);
+
+    // Forfeit button must be visible (not hidden) once the game starts
+    await expect(page.locator('#forfeit-btn')).not.toHaveClass(/hidden/);
+    await expect(page.locator('#forfeit-btn')).toBeVisible();
+  });
+
+  test('forfeit button is visible in a Blackjack game', async ({ page }) => {
+    await joinGame(page, 'ForfeitBJUser');
+    // Select Blackjack
+    await page.click('#pick-blackjack');
+    await page.waitForSelector('.invite-btn', { timeout: 5_000 });
+    const botBtn = page.locator('.bot-row .invite-btn').first();
+    if (await botBtn.count() > 0) await botBtn.click();
+    else await page.locator('.invite-btn').first().click();
+
+    await waitForGameScreen(page);
+
+    await expect(page.locator('#forfeit-btn')).not.toHaveClass(/hidden/);
+    await expect(page.locator('#forfeit-btn')).toBeVisible();
+  });
+
+});

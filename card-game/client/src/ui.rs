@@ -650,6 +650,7 @@ fn handle_server_message(app: AppHandle, json: String) {
             hide("invite-banner");
             show("game-screen");
             show("chat-panel");
+            show("forfeit-btn");
 
             // Expose opponent UUID to the JS WebRTC voice layer
             if let Some(w) = web_sys::window() {

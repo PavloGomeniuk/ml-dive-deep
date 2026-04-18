@@ -689,6 +689,22 @@
 
     /* ── MOBILE OVERRIDES ── */
     @media (max-width: 600px) {
+      /* Status bar: wrap onto two lines so voice/video buttons aren't clipped */
+      #status-bar {
+        height: auto;
+        min-height: 36px;
+        flex-wrap: wrap;
+        padding: 4px 8px;
+        gap: 4px 12px;
+      }
+      #status-bar .status-item {
+        flex-shrink: 0;
+      }
+      #status-bar > div:last-child {
+        width: 100%;
+        margin-left: 0;
+      }
+
       #chat-panel {
         position: fixed;
         bottom: 0; left: 0; right: 0;
@@ -786,6 +802,7 @@
       <button id="lounge-others-btn" class="lounge-media-btn" title="Mute others">🔊 Others</button>
       <button id="lounge-video-btn" class="lounge-media-btn" title="Toggle camera">📷 Video</button>
     </div>
+    <span id="lounge-voice-status" style="font-size:10px;color:var(--text-dim);padding:0 6px;"></span>
     <button id="lounge-leave-btn">← Leave</button>
   </div>
 
@@ -921,6 +938,11 @@ function myId() { return window.cardArenaMyId || ''; }
 function isPolite(peerId) { return myId() < peerId; }
 
 async function startVoice() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setVoiceStatus('Mic requires HTTPS');
+    console.warn('Voice chat: mediaDevices API unavailable (page must be served over HTTPS)');
+    return;
+  }
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     voiceActive = true;
@@ -989,6 +1011,11 @@ function toggleMute() {
 // ── Video Chat ────────────────────────────────────────────────────────────────
 
 async function startVideo() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setVoiceStatus('Camera requires HTTPS');
+    console.warn('Video chat: mediaDevices API unavailable (page must be served over HTTPS)');
+    return;
+  }
   try {
     localVideoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
     videoActive = true;
@@ -1090,6 +1117,9 @@ function updateOthersBtn() {
 function setVoiceStatus(msg) {
   const el = document.getElementById('voice-status');
   if (el) el.textContent = msg;
+  // Also surface errors in the lounge status span (game-screen status not visible there)
+  const loungeEl = document.getElementById('lounge-voice-status');
+  if (loungeEl) loungeEl.textContent = msg;
 }
 
 document.getElementById('voice-btn').addEventListener('click', () => {
