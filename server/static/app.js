@@ -6,8 +6,9 @@ let myName = null;
 let ws = null;
 let wsRetryDelay = 1000;
 let wsRetrying = false;
-let peers = {};           // {peerId: RTCPeerConnection}
-let peerStreams = {};     // {peerId: MediaStream}
+let peers = {};             // {peerId: RTCPeerConnection}
+let peerStreams = {};       // {peerId: MediaStream}
+let peerMakingOffer = {};  // {peerId: bool} — perfect-negotiation glare guard
 let localStream = null;
 let localScreenStream = null;
 let micOn = false;
@@ -260,10 +261,28 @@ function handleWS(msg) {
 function createPeerConnection(peerId) {
   const pc = new RTCPeerConnection({iceServers: stunServers});
   peers[peerId] = pc;
+  peerMakingOffer[peerId] = false;
 
   if (localStream) {
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
   }
+
+  // Renegotiate whenever tracks are added after the initial handshake
+  // (e.g. user enables camera mid-session). Guard prevents collision with
+  // the explicit offer in startOffer().
+  pc.onnegotiationneeded = async () => {
+    if (peerMakingOffer[peerId]) return;
+    try {
+      peerMakingOffer[peerId] = true;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.send(JSON.stringify({type: 'offer', target: peerId, sdp: pc.localDescription}));
+    } catch (e) {
+      console.warn('[WebRTC] onnegotiationneeded error', e);
+    } finally {
+      peerMakingOffer[peerId] = false;
+    }
+  };
 
   pc.onicecandidate = e => {
     if (e.candidate) {
@@ -286,17 +305,38 @@ function createPeerConnection(peerId) {
 
 async function startOffer(peerId) {
   const pc = createPeerConnection(peerId);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({type: 'offer', target: peerId, sdp: pc.localDescription}));
+  // Set flag before yielding so onnegotiationneeded doesn't double-send
+  peerMakingOffer[peerId] = true;
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({type: 'offer', target: peerId, sdp: pc.localDescription}));
+  } catch (e) {
+    console.warn('[WebRTC] startOffer error', e);
+  } finally {
+    peerMakingOffer[peerId] = false;
+  }
 }
 
 async function handleOffer(msg) {
-  const pc = createPeerConnection(msg.from);
-  await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({type: 'answer', target: msg.from, sdp: pc.localDescription}));
+  // Reuse existing PC for renegotiation offers — don't create a new one.
+  // Perfect negotiation: if both sides offer simultaneously (glare), the
+  // polite peer (higher session ID) yields by rolling back its offer.
+  let pc = peers[msg.from];
+  if (!pc) pc = createPeerConnection(msg.from);
+
+  const isPolite = myId > msg.from;
+  const collision = peerMakingOffer[msg.from] || pc.signalingState !== 'stable';
+  if (!isPolite && collision) return; // impolite peer ignores colliding offer
+
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({type: 'answer', target: msg.from, sdp: pc.localDescription}));
+  } catch (e) {
+    console.warn('[WebRTC] handleOffer error', e);
+  }
 }
 
 async function handleAnswer(msg) {
@@ -315,6 +355,7 @@ function closePeer(peerId) {
   const pc = peers[peerId];
   if (pc) { pc.close(); delete peers[peerId]; }
   delete peerStreams[peerId];
+  delete peerMakingOffer[peerId];
 }
 
 // ── Video tiles ───────────────────────────────────────────────────────────
@@ -417,10 +458,40 @@ function updatePresence(peerList) {
   }
 }
 
+// ── Media availability guard ──────────────────────────────────────────────
+function mediaAvailable() {
+  if (!window.isSecureContext) {
+    showToast('Camera and mic require HTTPS. Ask your host to enable HTTPS.', 'error');
+    return false;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Camera and mic are not supported in this browser.', 'error');
+    return false;
+  }
+  return true;
+}
+
+// ── Toast notification ────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+  const existing = document.getElementById('media-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.id = 'media-toast';
+  toast.className = `media-toast media-toast-${type}`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.classList.add('media-toast-visible'), 10);
+  setTimeout(() => {
+    toast.classList.remove('media-toast-visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 6000);
+}
+
 // ── Camera / Mic ──────────────────────────────────────────────────────────
 async function toggleMic() {
-  if (!localStream) {
-    if (!await startLocalMedia()) return;
+  if (!mediaAvailable()) return;
+  if (!localStream || localStream.getAudioTracks().length === 0) {
+    if (!await acquireMic()) return;
   }
   micOn = !micOn;
   localStream.getAudioTracks().forEach(t => { t.enabled = micOn; });
@@ -429,8 +500,9 @@ async function toggleMic() {
 }
 
 async function toggleCam() {
-  if (!localStream) {
-    if (!await startLocalMedia()) return;
+  if (!mediaAvailable()) return;
+  if (!localStream || localStream.getVideoTracks().length === 0) {
+    if (!await acquireCam()) return;
   }
   camOn = !camOn;
   localStream.getVideoTracks().forEach(t => { t.enabled = camOn; });
@@ -446,6 +518,14 @@ async function toggleCam() {
 async function toggleScreen() {
   if (screenOn) {
     stopScreen();
+    return;
+  }
+  if (!window.isSecureContext) {
+    showToast('Screen sharing requires HTTPS.', 'error');
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    showToast('Screen sharing is not supported on this device.', 'error');
     return;
   }
   try {
@@ -481,25 +561,77 @@ function stopScreen() {
   }
 }
 
-async function startLocalMedia() {
+// ── Permission pre-flight ─────────────────────────────────────────────────
+// Checks the stored permission state before calling getUserMedia.
+// If already 'denied', Chrome won't show a dialog — we show specific steps instead.
+async function queryPermission(name) {
+  if (!navigator.permissions) return 'prompt';
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
-    micOn = true;
-    camOn = true;
-    // Add tracks to existing peer connections
-    for (const pc of Object.values(peers)) {
-      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    }
+    const result = await navigator.permissions.query({name});
+    return result.state; // 'granted' | 'denied' | 'prompt'
+  } catch {
+    return 'prompt';
+  }
+}
+
+// Adds a new track to localStream and all open peer connections.
+function attachTrackToStream(track, sourceStream) {
+  track.enabled = false; // caller enables it via toggle
+  if (!localStream) {
+    localStream = sourceStream;
+  } else if (!localStream.getTracks().includes(track)) {
+    localStream.addTrack(track);
+  }
+  for (const pc of Object.values(peers)) {
+    const already = pc.getSenders().find(s => s.track === track);
+    if (!already) pc.addTrack(track, localStream);
+  }
+}
+
+// Acquires microphone only — called by toggleMic on first use.
+async function acquireMic() {
+  const state = await queryPermission('microphone');
+  if (state === 'denied') {
+    showToast('Microphone blocked. Tap 🔒 in the address bar → Site settings → Allow microphone.', 'error');
+    return false;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
+    stream.getAudioTracks().forEach(t => attachTrackToStream(t, stream));
     return true;
   } catch (err) {
-    const myTile = document.querySelector('[data-peer="me"]');
-    if (myTile) {
-      const avatar = myTile.querySelector('.tile-avatar');
-      if (avatar) {
-        avatar.title = 'Camera access denied — check browser settings';
-      }
-    }
-    console.warn('[media]', err.name, err.message);
+    const denied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+    showToast(
+      denied
+        ? 'Microphone permission denied. Tap 🔒 → Site settings → Allow microphone.'
+        : 'Could not access microphone — check it is not in use by another app.',
+      'error'
+    );
+    console.warn('[mic]', err.name, err.message);
+    return false;
+  }
+}
+
+// Acquires camera only — called by toggleCam on first use.
+async function acquireCam() {
+  const state = await queryPermission('camera');
+  if (state === 'denied') {
+    showToast('Camera blocked. Tap 🔒 in the address bar → Site settings → Allow camera.', 'error');
+    return false;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: false, video: true});
+    stream.getVideoTracks().forEach(t => attachTrackToStream(t, stream));
+    return true;
+  } catch (err) {
+    const denied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+    showToast(
+      denied
+        ? 'Camera permission denied. Tap 🔒 → Site settings → Allow camera.'
+        : 'Could not access camera — check it is not in use by another app.',
+      'error'
+    );
+    console.warn('[cam]', err.name, err.message);
     return false;
   }
 }

@@ -410,6 +410,46 @@ header {
   margin-top: 2px;
 }
 
+/* ── Media toast (mic/cam/screen errors) ─────────────────────────────────── */
+.media-toast {
+  position: fixed;
+  /* Sit above the mobile controls bar (56px) + Android gesture bar (~20px) */
+  bottom: calc(56px + 24px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  max-width: calc(100vw - 32px);
+  width: max-content;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: 0 4px 12px rgba(0,0,0,.18);
+  z-index: 200;
+  opacity: 0;
+  transition: opacity .2s, transform .2s;
+  pointer-events: none;
+  text-align: center;
+}
+/* On desktop, position near the controls (no mobile bar) */
+@media (min-width: 641px) {
+  .media-toast { bottom: 80px; }
+}
+.media-toast.media-toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.media-toast-error {
+  background: #FEE2E2;
+  color: #991B1B;
+  border: 1px solid #FECACA;
+}
+.media-toast-info {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid #FCD34D;
+}
+
 /* ── New messages float ──────────────────────────────────────────────────── */
 #new-msgs-btn {
   display: none;
